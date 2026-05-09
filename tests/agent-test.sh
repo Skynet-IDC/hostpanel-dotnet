@@ -22,7 +22,8 @@ send_rpc() {
 test_method() {
     local name="$1"
     local method="$2"
-    local params="${3:-{}}"
+    local params="$3"
+    [ -z "$params" ] && params='{}'
     local expect="${4:-success}"
     TOTAL=$((TOTAL + 1))
 

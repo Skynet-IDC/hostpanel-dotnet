@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.7" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.7" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.6" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.7">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.7" />
+    <PackageReference Include="OpenTelemetry.Exporter.Console" Version="1.15.3" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.7" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HostPanel.Core\HostPanel.Core.csproj" />
+    <ProjectReference Include="..\HostPanel.Infrastructure\HostPanel.Infrastructure.csproj" />
+    <ProjectReference Include="..\HostPanel.Shared\HostPanel.Shared.csproj" />
+    <ProjectReference Include="..\HostPanel.Modules.Web\HostPanel.Modules.Web.csproj" />
+    <ProjectReference Include="..\HostPanel.Modules.Mail\HostPanel.Modules.Mail.csproj" />
+    <ProjectReference Include="..\HostPanel.Modules.Dns\HostPanel.Modules.Dns.csproj" />
+    <ProjectReference Include="..\HostPanel.Modules.Database\HostPanel.Modules.Database.csproj" />
+    <ProjectReference Include="..\HostPanel.Modules.Ssl\HostPanel.Modules.Ssl.csproj" />
+    <ProjectReference Include="..\HostPanel.Modules.FileManager\HostPanel.Modules.FileManager.csproj" />
+    <ProjectReference Include="..\HostPanel.Modules.Billing\HostPanel.Modules.Billing.csproj" />
+  </ItemGroup>
+
+</Project>

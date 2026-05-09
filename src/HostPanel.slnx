@@ -1,0 +1,15 @@
+<Solution>
+  <Project Path="HostPanel.Agent/HostPanel.Agent.csproj" />
+  <Project Path="HostPanel.Api/HostPanel.Api.csproj" />
+  <Project Path="HostPanel.Core/HostPanel.Core.csproj" />
+  <Project Path="HostPanel.Infrastructure/HostPanel.Infrastructure.csproj" />
+  <Project Path="HostPanel.Modules.Billing/HostPanel.Modules.Billing.csproj" />
+  <Project Path="HostPanel.Modules.Database/HostPanel.Modules.Database.csproj" />
+  <Project Path="HostPanel.Modules.Dns/HostPanel.Modules.Dns.csproj" />
+  <Project Path="HostPanel.Modules.FileManager/HostPanel.Modules.FileManager.csproj" />
+  <Project Path="HostPanel.Modules.Mail/HostPanel.Modules.Mail.csproj" />
+  <Project Path="HostPanel.Modules.Ssl/HostPanel.Modules.Ssl.csproj" />
+  <Project Path="HostPanel.Modules.Web/HostPanel.Modules.Web.csproj" />
+  <Project Path="HostPanel.Shared/HostPanel.Shared.csproj" />
+  <Project Path="HostPanel.Tests/HostPanel.Tests.csproj" />
+</Solution>

@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "buildDate": "2026-05-09",
+  "channel": "stable",
+  "repo": "https://github.com/yourusername/hostpanel",
+  "minDotnetVersion": "10.0.0",
+  "minNodeVersion": "22.0.0"
+}

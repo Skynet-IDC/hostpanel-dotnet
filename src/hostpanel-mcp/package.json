@@ -1,0 +1,13 @@
+{
+  "name": "hostpanel-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for HostPanel - enables Claude Code and Cursor to manage hosting",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest"
+  }
+}

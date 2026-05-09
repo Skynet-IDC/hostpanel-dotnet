@@ -1,0 +1,175 @@
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+using HostPanel.Core.Models;
+
+namespace HostPanel.Infrastructure.Data;
+
+public class AppDbContext : IdentityDbContext<AppUser>
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
+
+    public DbSet<ServicePlan> ServicePlans => Set<ServicePlan>();
+    public DbSet<Subscription> Subscriptions => Set<Subscription>();
+    public DbSet<Domain> Domains => Set<Domain>();
+    public DbSet<DnsZone> DnsZones => Set<DnsZone>();
+    public DbSet<DnsRecord> DnsRecords => Set<DnsRecord>();
+    public DbSet<Mailbox> Mailboxes => Set<Mailbox>();
+    public DbSet<MailAlias> MailAliases => Set<MailAlias>();
+    public DbSet<HostedDatabase> HostedDatabases => Set<HostedDatabase>();
+    public DbSet<SslCertificate> SslCertificates => Set<SslCertificate>();
+    public DbSet<Backup> Backups => Set<Backup>();
+    public DbSet<Invoice> Invoices => Set<Invoice>();
+    public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<DesiredState> DesiredStates => Set<DesiredState>();
+    public DbSet<SmtpRelayConfig> SmtpRelayConfigs => Set<SmtpRelayConfig>();
+    public DbSet<CronJob> CronJobs => Set<CronJob>();
+    public DbSet<Server> Servers => Set<Server>();
+    public DbSet<WebhookEndpoint> WebhookEndpoints => Set<WebhookEndpoint>();
+    public DbSet<WordPressSite> WordPressSites => Set<WordPressSite>();
+    public DbSet<FtpAccount> FtpAccounts => Set<FtpAccount>();
+    public DbSet<GitDeployment> GitDeployments => Set<GitDeployment>();
+    public DbSet<DockerContainer> DockerContainers => Set<DockerContainer>();
+    public DbSet<ServerIpAddress> ServerIpAddresses => Set<ServerIpAddress>();
+    public DbSet<IpBlacklistEntry> IpBlacklistEntries => Set<IpBlacklistEntry>();
+    public DbSet<TotpToken> TotpTokens => Set<TotpToken>();
+    public DbSet<BrandingConfig> BrandingConfigs => Set<BrandingConfig>();
+    public DbSet<AppConfig> AppConfigs => Set<AppConfig>();
+    public DbSet<HaSyncState> HaSyncStates => Set<HaSyncState>();
+
+    protected override void OnModelCreating(ModelBuilder builder)
+    {
+        base.OnModelCreating(builder);
+
+        // AppUser
+        builder.Entity<AppUser>(e =>
+        {
+            e.HasMany(u => u.Subscriptions)
+                .WithOne(s => s.User)
+                .HasForeignKey(s => s.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            e.HasOne(u => u.ParentUser)
+                .WithMany()
+                .HasForeignKey(u => u.ParentUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            e.HasMany(u => u.ApiKeys)
+                .WithOne(k => k.User)
+                .HasForeignKey(k => k.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Subscription
+        builder.Entity<Subscription>(e =>
+        {
+            e.HasOne(s => s.ServicePlan)
+                .WithMany(p => p.Subscriptions)
+                .HasForeignKey(s => s.ServicePlanId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            e.HasMany(s => s.Domains)
+                .WithOne(d => d.Subscription)
+                .HasForeignKey(d => d.SubscriptionId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasMany(s => s.Databases)
+                .WithOne(d => d.Subscription)
+                .HasForeignKey(d => d.SubscriptionId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasMany(s => s.Backups)
+                .WithOne(b => b.Subscription)
+                .HasForeignKey(b => b.SubscriptionId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasMany(s => s.Invoices)
+                .WithOne(i => i.Subscription)
+                .HasForeignKey(i => i.SubscriptionId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Domain
+        builder.Entity<Domain>(e =>
+        {
+            e.HasIndex(d => d.Name).IsUnique();
+
+            e.HasMany(d => d.DnsZones)
+                .WithOne(z => z.Domain)
+                .HasForeignKey(z => z.DomainId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasMany(d => d.Mailboxes)
+                .WithOne(m => m.Domain)
+                .HasForeignKey(m => m.DomainId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasMany(d => d.MailAliases)
+                .WithOne(a => a.Domain)
+                .HasForeignKey(a => a.DomainId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            e.HasOne(d => d.SslCertificate)
+                .WithOne(c => c.Domain)
+                .HasForeignKey<SslCertificate>(c => c.DomainId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // DnsZone
+        builder.Entity<DnsZone>(e =>
+        {
+            e.HasMany(z => z.Records)
+                .WithOne(r => r.DnsZone)
+                .HasForeignKey(r => r.DnsZoneId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Invoice
+        builder.Entity<Invoice>(e =>
+        {
+            e.Property(i => i.Amount).HasPrecision(18, 2);
+        });
+
+        // ServicePlan
+        builder.Entity<ServicePlan>(e =>
+        {
+            e.Property(p => p.PricePerPeriod).HasPrecision(18, 2);
+        });
+
+        // ApiKey
+        builder.Entity<ApiKey>(e =>
+        {
+            e.HasIndex(k => k.KeyPrefix);
+        });
+
+        // DesiredState
+        builder.Entity<DesiredState>(e =>
+        {
+            e.HasIndex(d => new { d.ResourceType, d.ResourceId }).IsUnique();
+            e.HasIndex(d => d.State);
+            e.HasIndex(d => d.NextRetryAt);
+        });
+    }
+
+    public override int SaveChanges()
+    {
+        SetTimestamps();
+        return base.SaveChanges();
+    }
+
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        SetTimestamps();
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+    private void SetTimestamps()
+    {
+        var entries = ChangeTracker.Entries<BaseEntity>();
+        foreach (var entry in entries)
+        {
+            if (entry.State == EntityState.Modified)
+                entry.Entity.UpdatedAt = DateTime.UtcNow;
+        }
+    }
+}

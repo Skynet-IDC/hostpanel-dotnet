@@ -1,0 +1,14 @@
+{
+  "name": "n8n-nodes-hostpanel",
+  "version": "1.0.0",
+  "description": "n8n nodes for HostPanel web hosting control panel",
+  "license": "MIT",
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": ["credentials/HostPanelApi.credentials.js"],
+    "nodes": ["nodes/HostPanel/HostPanel.node.js", "nodes/HostPanel/HostPanelTrigger.node.js"]
+  },
+  "scripts": {
+    "build": "echo 'No build step needed'"
+  }
+}

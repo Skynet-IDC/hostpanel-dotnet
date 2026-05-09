@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-HostPanel.Agent-300c96a0-a499-4e8b-9c0a-1830588b77e0</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\HostPanel.Shared\HostPanel.Shared.csproj" />
+    <ProjectReference Include="..\HostPanel.Core\HostPanel.Core.csproj" />
+  </ItemGroup>
+</Project>

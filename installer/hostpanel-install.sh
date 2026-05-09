@@ -395,6 +395,11 @@ deploy_hostpanel() {
         else
             log_warn "No hostpanel-ui directory found in source — frontend not deployed"
         fi
+        # Copy version.json
+        if [[ -f "$SOURCE_DIR/version.json" ]]; then
+            cp "$SOURCE_DIR/version.json" "$INSTALL_DIR/version.json"
+            log_info "version.json deployed"
+        fi
     else
         log_warn "No --source specified. Binaries must be copied to ${INSTALL_DIR} manually."
     fi

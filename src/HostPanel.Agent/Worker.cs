@@ -40,12 +40,18 @@ public class Worker : BackgroundService
         listener.Bind(new UnixDomainSocketEndPoint(_socketPath));
         listener.Listen(10);
 
-        // Restrict socket to www-data group (API process user)
+        // Set socket permissions so www-data (API process) can connect
         try
         {
             File.SetUnixFileMode(_socketPath,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite |
                 UnixFileMode.GroupRead | UnixFileMode.GroupWrite);
+
+            // Change socket group to www-data
+            using var chgrp = System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo("/bin/chgrp", $"www-data {_socketPath}")
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false });
+            chgrp?.WaitForExit(5000);
         }
         catch (Exception ex)
         {

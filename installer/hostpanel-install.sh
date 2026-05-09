@@ -259,7 +259,73 @@ install_mail() {
     groupadd -g 5000 vmail 2>/dev/null || true
     useradd -g vmail -u 5000 -d /var/vmail -m -s /usr/sbin/nologin vmail 2>/dev/null || true
 
-    log_info "Mail server installed"
+    # Deploy multi-port Postfix master.cf (25, 587, 465, 2525)
+    log_info "Configuring multi-port SMTP (25/587/465/2525)..."
+    cat > /etc/postfix/master.cf <<'MASTER_CF'
+# HostPanel Postfix master.cf — Multi-port SMTP
+
+# Standard SMTP (port 25) — receiving mail
+smtp      inet  n       -       y       -       -       smtpd
+
+# Submission (port 587) — client sending with STARTTLS
+submission inet n       -       y       -       -       smtpd
+  -o syslog_name=postfix/submission
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=yes
+  -o smtpd_reject_unlisted_recipient=no
+  -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject
+  -o milter_macro_daemon_name=ORIGINATING
+
+# SMTPS (port 465) — implicit TLS
+smtps     inet  n       -       y       -       -       smtpd
+  -o syslog_name=postfix/smtps
+  -o smtpd_tls_wrappermode=yes
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_reject_unlisted_recipient=no
+  -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject
+  -o milter_macro_daemon_name=ORIGINATING
+
+# Alternate submission (port 2525) — fallback if 587 blocked
+2525      inet  n       -       y       -       -       smtpd
+  -o syslog_name=postfix/alt-submission
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=yes
+  -o smtpd_reject_unlisted_recipient=no
+  -o smtpd_recipient_restrictions=permit_sasl_authenticated,reject
+  -o milter_macro_daemon_name=ORIGINATING
+
+# Local delivery
+pickup    unix  n       -       y       60      1       pickup
+cleanup   unix  n       -       y       -       0       cleanup
+qmgr      unix  n       -       n       300     1       qmgr
+tlsmgr    unix  -       -       y       1000?   1       tlsmgr
+rewrite   unix  -       -       y       -       -       trivial-rewrite
+bounce    unix  -       -       y       -       0       bounce
+defer     unix  -       -       y       -       0       bounce
+trace     unix  -       -       y       -       0       bounce
+verify    unix  -       -       y       -       1       verify
+flush     unix  n       -       y       1000?   0       flush
+proxymap  unix  -       -       n       -       -       proxymap
+proxywrite unix -       -       n       -       1       proxymap
+smtp      unix  -       -       y       -       -       smtp
+relay     unix  -       -       y       -       -       smtp
+showq     unix  n       -       y       -       -       showq
+error     unix  -       -       y       -       -       error
+retry     unix  -       -       y       -       -       error
+discard   unix  -       -       y       -       -       discard
+local     unix  -       n       n       -       -       local
+virtual   unix  -       n       n       -       -       virtual
+lmtp      unix  -       -       y       -       -       lmtp
+anvil     unix  -       -       y       -       1       anvil
+scache    unix  -       -       y       -       1       scache
+postlog   unix-dgram n  -       n       -       1       postlogd
+MASTER_CF
+
+    # Reload Postfix with new config
+    systemctl restart postfix
+    log_info "Mail server installed with multi-port SMTP"
 }
 
 # Install PowerDNS

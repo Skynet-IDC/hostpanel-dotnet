@@ -16,7 +16,7 @@ send_rpc() {
     [ -z "$params" ] && params='{}'
     local id="test-$(date +%s%N)"
     local payload="{\"method\":\"$method\",\"params\":$params,\"id\":\"$id\",\"token\":\"$TOKEN\",\"traceId\":\"test\"}"
-    echo "$payload" | socat - UNIX-CONNECT:"$SOCKET" 2>/dev/null || echo '{"error":{"message":"socket connection failed"}}'
+    echo "$payload" | socat -t 60 - UNIX-CONNECT:"$SOCKET" 2>/dev/null || echo '{"error":{"message":"socket connection failed"}}'
 }
 
 test_method() {

@@ -96,11 +96,22 @@ public class PanelUpdateController : ControllerBase
             catch { }
         }
 
+        // Compare versions properly — update only if remote > local
+        var updateAvailable = false;
+        var sourceExists = System.IO.Directory.Exists(sourceDir);
+        try
+        {
+            if (sourceExists && remoteVersion != "0.0.0")
+                updateAvailable = new Version(remoteVersion) > new Version(localVersion);
+        }
+        catch { updateAvailable = remoteVersion != localVersion && remoteVersion != "0.0.0"; }
+
         return Ok(new
         {
             currentVersion = localVersion,
             latestVersion = remoteVersion,
-            updateAvailable = remoteVersion != localVersion,
+            updateAvailable,
+            sourceExists,
             sourceDir
         });
     }

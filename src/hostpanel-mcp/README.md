@@ -32,6 +32,10 @@ MCP (Model Context Protocol) server that enables AI tools like Claude Code and C
    }
    ```
 
+   **Note:** Self-signed certs are handled automatically — the MCP sets
+   `NODE_TLS_REJECT_UNAUTHORIZED=0` when connecting to HTTPS. No extra
+   config needed. Once you install a real SSL cert, this is bypassed.
+
 ## Available Tools
 
 - `list_domains` / `create_domain` / `delete_domain`

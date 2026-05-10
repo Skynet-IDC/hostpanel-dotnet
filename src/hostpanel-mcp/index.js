@@ -5,6 +5,12 @@ import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprot
 const API_BASE = process.env.HOSTPANEL_API_URL || "http://localhost:5000/api/v1";
 const API_KEY = process.env.HOSTPANEL_API_KEY || "";
 
+// Self-signed cert support: set NODE_TLS_REJECT_UNAUTHORIZED=0 automatically
+// when connecting to HTTPS with no explicit opt-out
+if (API_BASE.startsWith("https://") && process.env.NODE_TLS_REJECT_UNAUTHORIZED === undefined) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
+
 async function apiCall(method, path, body = null) {
   const opts = {
     method,

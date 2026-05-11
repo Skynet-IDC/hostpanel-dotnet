@@ -17,7 +17,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
         builder.ConfigureServices(services =>
         {
-            // Remove SQL Server
+            // Remove SQL Server related services
             var toRemove = services.Where(d =>
             {
                 var st = d.ServiceType.FullName ?? "";

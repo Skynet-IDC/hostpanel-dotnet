@@ -57,14 +57,27 @@ builder.Services.AddIdentity<AppUser, IdentityRole>(options =>
 var jwtKey = builder.Configuration["Jwt:Key"]
     ?? throw new InvalidOperationException("JWT key not configured");
 
-// Single authentication builder with all schemes
+// Multi-scheme auth: routes to ApiKey or JWT based on header prefix
+const string MultiAuthScheme = "MultiAuth";
+
 var authBuilder = builder.Services.AddAuthentication(options =>
 {
-    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
-    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultScheme = MultiAuthScheme;
+    options.DefaultChallengeScheme = MultiAuthScheme;
+})
+.AddPolicyScheme(MultiAuthScheme, MultiAuthScheme, options =>
+{
+    options.ForwardDefaultSelector = ctx =>
+    {
+        string? auth = ctx.Request.Headers.Authorization.FirstOrDefault();
+        if (auth is not null && auth.StartsWith("Bearer hp_", StringComparison.Ordinal))
+            return "ApiKey";
+        return JwtBearerDefaults.AuthenticationScheme;
+    };
 })
 .AddJwtBearer(options =>
 {
+    options.MapInboundClaims = false; // Prevent remapping claim types
     options.TokenValidationParameters = new TokenValidationParameters
     {
         ValidateIssuer = true,
@@ -72,6 +85,8 @@ var authBuilder = builder.Services.AddAuthentication(options =>
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
         ValidIssuer = builder.Configuration["Jwt:Issuer"],
+        NameClaimType = System.Security.Claims.ClaimTypes.Name,
+        RoleClaimType = System.Security.Claims.ClaimTypes.Role,
         ValidAudience = builder.Configuration["Jwt:Audience"],
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
     };
@@ -96,11 +111,10 @@ if (!string.IsNullOrEmpty(authentikAuthority))
     });
 }
 
-// Multi-scheme policy: accept JWT or API key
+// Default auth policy uses the PolicyScheme which routes to the right handler
 builder.Services.AddAuthorization(options =>
 {
-    options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder(
-        JwtBearerDefaults.AuthenticationScheme, "ApiKey")
+    options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder(MultiAuthScheme)
         .RequireAuthenticatedUser()
         .Build();
 });

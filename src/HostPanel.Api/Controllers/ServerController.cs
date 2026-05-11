@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -15,11 +16,13 @@ public class ServerController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly IServerAgent _agent;
+    private readonly ILogger<ServerController> _logger;
 
-    public ServerController(AppDbContext db, IServerAgent agent)
+    public ServerController(AppDbContext db, IServerAgent agent, ILogger<ServerController> logger)
     {
         _db = db;
         _agent = agent;
+        _logger = logger;
     }
 
     [HttpGet("stats")]
@@ -30,7 +33,6 @@ public class ServerController : ControllerBase
         var activeSubscriptions = await _db.Subscriptions
             .CountAsync(s => s.Status == SubscriptionStatus.Active);
 
-        // Get real system stats from Agent
         long totalMemMb = 0, usedMemMb = 0, totalDiskMb = 0, usedDiskMb = 0;
         double uptimeHours = 0;
         var hostname = Environment.MachineName;
@@ -44,36 +46,50 @@ public class ServerController : ControllerBase
                 Params = []
             });
 
-            if (agentResult.IsSuccess && agentResult.Result?.Data is not null)
+            if (agentResult.IsSuccess && agentResult.Result?.Data is { } data1)
             {
-                var data = agentResult.Result.Data;
-                if (data.TryGetValue("hostname", out var h)) hostname = h?.ToString() ?? hostname;
-                if (data.TryGetValue("osVersion", out var os)) osVersion = os?.ToString() ?? osVersion;
-                if (data.TryGetValue("totalMemoryMb", out var tm)) totalMemMb = Convert.ToInt64(tm);
-                if (data.TryGetValue("uptimeSeconds", out var up)) uptimeHours = Convert.ToDouble(up) / 3600;
+                hostname = GetString(data1, "hostname") ?? hostname;
+                osVersion = GetString(data1, "osVersion") ?? osVersion;
+                totalMemMb = GetInt64(data1, "totalMemoryMb") ?? totalMemMb;
+                var ups1 = GetInt64(data1, "uptimeSeconds");
+                if (ups1 is not null) uptimeHours = ups1.Value / 3600.0;
+            }
+            else if (agentResult.Error is { } e1)
+            {
+                _logger.LogWarning("Agent system.getStats returned error {Code}: {Message}", e1.Code, e1.Message);
             }
 
-            // Get detailed resource stats from analytics handler
             var resourceResult = await _agent.ExecuteAsync(new AgentRequest
             {
                 Method = AgentMethods.AnalyticsServerResources,
                 Params = []
             });
 
-            if (resourceResult.IsSuccess && resourceResult.Result?.Data is not null)
+            if (resourceResult.IsSuccess && resourceResult.Result?.Data is { } data2)
             {
-                var data = resourceResult.Result.Data;
-                if (data.TryGetValue("totalMemoryBytes", out var tmb)) totalMemMb = Convert.ToInt64(tmb) / (1024 * 1024);
-                if (data.TryGetValue("usedMemoryBytes", out var umb)) usedMemMb = Convert.ToInt64(umb) / (1024 * 1024);
-                if (data.TryGetValue("totalDiskBytes", out var tdb)) totalDiskMb = Convert.ToInt64(tdb) / (1024 * 1024);
-                if (data.TryGetValue("usedDiskBytes", out var udb)) usedDiskMb = Convert.ToInt64(udb) / (1024 * 1024);
-                if (data.TryGetValue("uptimeSeconds", out var ups)) uptimeHours = Convert.ToDouble(ups) / 3600;
+                var tmb = GetInt64(data2, "totalMemoryBytes");
+                var umb = GetInt64(data2, "usedMemoryBytes");
+                var tdb = GetInt64(data2, "totalDiskBytes");
+                var udb = GetInt64(data2, "usedDiskBytes");
+                var ups = GetInt64(data2, "uptimeSeconds");
+                if (tmb is not null) totalMemMb = tmb.Value / (1024 * 1024);
+                if (umb is not null) usedMemMb = umb.Value / (1024 * 1024);
+                if (tdb is not null) totalDiskMb = tdb.Value / (1024 * 1024);
+                if (udb is not null) usedDiskMb = udb.Value / (1024 * 1024);
+                if (ups is not null) uptimeHours = ups.Value / 3600.0;
+            }
+            else if (resourceResult.Error is { } e2)
+            {
+                _logger.LogWarning("Agent analytics.serverResources returned error {Code}: {Message}", e2.Code, e2.Message);
             }
         }
-        catch { /* Agent unavailable — return zeros */ }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to fetch server stats from agent");
+        }
 
         return Ok(new ServerStatsDto(
-            CpuUsagePercent: 0, // CPU requires sampling over time
+            CpuUsagePercent: 0,
             TotalMemoryMb: totalMemMb,
             UsedMemoryMb: usedMemMb,
             TotalDiskMb: totalDiskMb,
@@ -85,5 +101,32 @@ public class ServerController : ControllerBase
             TotalSubscriptions: totalSubscriptions,
             ActiveSubscriptions: activeSubscriptions
         ));
+    }
+
+    private static long? GetInt64(IDictionary<string, object?> d, string key)
+    {
+        if (!d.TryGetValue(key, out var v) || v is null) return null;
+        return v switch
+        {
+            JsonElement je when je.ValueKind == JsonValueKind.Number && je.TryGetInt64(out var n) => n,
+            JsonElement je when je.ValueKind == JsonValueKind.String && long.TryParse(je.GetString(), out var n) => n,
+            long n => n,
+            int n => n,
+            double d2 => (long)d2,
+            string s when long.TryParse(s, out var n) => n,
+            _ => null
+        };
+    }
+
+    private static string? GetString(IDictionary<string, object?> d, string key)
+    {
+        if (!d.TryGetValue(key, out var v) || v is null) return null;
+        return v switch
+        {
+            JsonElement je when je.ValueKind == JsonValueKind.String => je.GetString(),
+            JsonElement je => je.ToString(),
+            string s => s,
+            _ => v.ToString()
+        };
     }
 }

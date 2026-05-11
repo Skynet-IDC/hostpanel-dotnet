@@ -2,8 +2,10 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using HostPanel.Core.DTOs;
 using HostPanel.Core.Enums;
+using HostPanel.Core.Interfaces;
 using HostPanel.Core.Models;
 using HostPanel.Infrastructure.Data;
 using HostPanel.Api.Middleware;
@@ -17,11 +19,15 @@ public class DomainsController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly TenantAuthorizationService _auth;
+    private readonly IServerAgent _agent;
+    private readonly ILogger<DomainsController> _logger;
 
-    public DomainsController(AppDbContext db, TenantAuthorizationService auth)
+    public DomainsController(AppDbContext db, TenantAuthorizationService auth, IServerAgent agent, ILogger<DomainsController> logger)
     {
         _db = db;
         _auth = auth;
+        _agent = agent;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -65,7 +71,7 @@ public class DomainsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<ActionResult<DomainDto>> Create([FromBody] CreateDomainRequest request)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, request.SubscriptionId)) return Forbid();
@@ -97,11 +103,27 @@ public class DomainsController : ControllerBase
         _db.Domains.Add(domain);
         await _db.SaveChangesAsync();
 
+        // Provision the nginx vhost via the agent. Best-effort: log warning if it fails,
+        // since the DB row is already persisted. The reconciler can retry / repair later.
+        var vhostResult = await _agent.ExecuteAsync(new AgentRequest
+        {
+            Method = AgentMethods.NginxCreateVhost,
+            Params = new Dictionary<string, object?>
+            {
+                ["domain"] = domain.Name,
+                ["docRoot"] = domain.DocumentRoot,
+                ["phpVersion"] = domain.PhpVersion ?? "8.3"
+            }
+        });
+        if (!vhostResult.IsSuccess)
+            _logger.LogWarning("Failed to create nginx vhost for {Domain}: {Error}",
+                domain.Name, vhostResult.Error?.Message);
+
         return CreatedAtAction(nameof(Get), new { id = domain.Id }, MapToDto(domain));
     }
 
     [HttpPut("{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<ActionResult<DomainDto>> Update(int id, [FromBody] UpdateDomainRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, id)) return Forbid();
@@ -119,7 +141,7 @@ public class DomainsController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Delete(int id)
     {
         if (!await _auth.CanAccessDomainAsync(User, id)) return Forbid();

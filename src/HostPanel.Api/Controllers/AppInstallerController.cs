@@ -46,7 +46,7 @@ public class AppInstallerController : ControllerBase
 
     /// <summary>Install a one-click app.</summary>
     [HttpPost("install")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Install(int domainId, [FromBody] InstallAppRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();

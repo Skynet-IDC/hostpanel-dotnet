@@ -62,21 +62,49 @@ public class WordPressInstallHandler : IAgentMethodHandler
             """;
         await File.WriteAllTextAsync(Path.Combine(docRoot, "wp-config.php"), wpConfig, ct);
 
-        // Install via WP-CLI if available
-        var wpCli = await ProcessRunner.RunAsync("/usr/local/bin/wp",
-            ["core", "install",
+        // Set ownership BEFORE running wp-cli so it can write wp-content/uploads etc. as the tenant user.
+        await ProcessRunner.RunAsync("/bin/chown", ["-R", $"{username}:{username}", docRoot], ct);
+
+        // Install via WP-CLI. Two important details:
+        //  - Invoke /usr/bin/php8.3 explicitly as the interpreter. wp-cli's shebang is
+        //    #!/usr/bin/env php which resolves to /etc/alternatives/php — that points at
+        //    the *highest* installed version (php8.4 on Ubuntu 24.04 with multi-PHP), and
+        //    php8.4 may not have php-mysql installed. WP_CLI_PHP env var is NOT respected
+        //    by older wp-cli versions, so we bypass the shebang by passing /usr/local/bin/wp
+        //    as a script arg to php8.3 directly.
+        //  - --skip-email avoids a 30s SMTP attempt + timeout on the welcome email.
+        var wpCli = await ProcessRunner.RunAsync("/usr/bin/php8.3",
+            ["/usr/local/bin/wp", "core", "install",
              $"--url={siteUrl}", $"--title={siteTitle}",
              $"--admin_user={adminUser}", $"--admin_password={adminPassword}",
              $"--admin_email={adminEmail}",
-             $"--path={docRoot}", $"--allow-root"], ct, timeoutMs: 60_000);
+             $"--path={docRoot}", "--skip-email", "--allow-root"], ct, timeoutMs: 60_000);
 
-        // Set ownership
+        if (wpCli.ExitCode != 0)
+        {
+            _logger.LogError("wp-cli core install failed for {DocRoot}: exit={Exit} stderr={StdErr}",
+                docRoot, wpCli.ExitCode, wpCli.StdErr);
+            return new AgentResult
+            {
+                Success = false,
+                Data = new()
+                {
+                    ["error"] = $"wp-cli core install failed (exit {wpCli.ExitCode})",
+                    ["stderr"] = wpCli.StdErr,
+                    ["stdout"] = wpCli.StdOut
+                }
+            };
+        }
+
+        // Re-chown — wp-cli might have created new files as root via --allow-root
         await ProcessRunner.RunAsync("/bin/chown", ["-R", $"{username}:{username}", docRoot], ct);
+
+        _logger.LogInformation("WordPress installed at {DocRoot}, site={SiteUrl}", docRoot, siteUrl);
 
         return new AgentResult
         {
             Success = true,
-            Data = new() { ["path"] = docRoot, ["wpCliOutput"] = wpCli.StdOut }
+            Data = new() { ["path"] = docRoot, ["siteUrl"] = siteUrl ?? "", ["wpCliOutput"] = wpCli.StdOut }
         };
     }
 

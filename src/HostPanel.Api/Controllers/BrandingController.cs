@@ -56,7 +56,7 @@ public class BrandingController : ControllerBase
 
     /// <summary>Update global branding (admin only).</summary>
     [HttpPut]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> UpdateGlobal([FromBody] UpdateBrandingRequest request)
     {
         var config = await _db.Set<BrandingConfig>().FirstOrDefaultAsync(b => b.ResellerId == null);
@@ -75,7 +75,7 @@ public class BrandingController : ControllerBase
 
     /// <summary>Update reseller-specific branding. Resellers can brand the panel for their customers.</summary>
     [HttpPut("reseller")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> UpdateReseller([FromBody] UpdateBrandingRequest request)
     {
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -113,7 +113,7 @@ public class BrandingController : ControllerBase
 
     /// <summary>Upload a logo file.</summary>
     [HttpPost("logo")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     [RequestSizeLimit(5 * 1024 * 1024)]
     public async Task<IActionResult> UploadLogo(IFormFile file)
     {
@@ -136,7 +136,7 @@ public class BrandingController : ControllerBase
 
     /// <summary>Reset branding to defaults.</summary>
     [HttpDelete]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> ResetGlobal()
     {
         var config = await _db.Set<BrandingConfig>().FirstOrDefaultAsync(b => b.ResellerId == null);

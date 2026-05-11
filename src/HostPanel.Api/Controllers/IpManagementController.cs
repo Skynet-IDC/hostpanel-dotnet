@@ -8,7 +8,7 @@ namespace HostPanel.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/ip")]
-[Authorize(Roles = "Admin")]
+[Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
 public class IpManagementController : ControllerBase
 {
     private readonly AppDbContext _db;

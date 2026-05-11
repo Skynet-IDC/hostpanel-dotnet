@@ -46,7 +46,7 @@ public class WordPressController : ControllerBase
     }
 
     [HttpPost("install")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Install([FromBody] WpInstallRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, request.DomainId)) return Forbid();
@@ -64,7 +64,7 @@ public class WordPressController : ControllerBase
     }
 
     [HttpPost("{siteId}/staging")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> CreateStaging(int siteId)
     {
         if (!await CanAccessSiteAsync(siteId)) return Forbid();
@@ -73,7 +73,7 @@ public class WordPressController : ControllerBase
     }
 
     [HttpPost("{siteId}/push-staging")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> PushStaging(int siteId)
     {
         if (!await CanAccessSiteAsync(siteId)) return Forbid();
@@ -82,7 +82,7 @@ public class WordPressController : ControllerBase
     }
 
     [HttpPost("update-all")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> UpdateAll()
     {
         await _wp.UpdateAllAsync();
@@ -90,7 +90,7 @@ public class WordPressController : ControllerBase
     }
 
     [HttpPost("{siteId}/security-scan")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> SecurityScan(int siteId)
     {
         if (!await CanAccessSiteAsync(siteId)) return Forbid();
@@ -99,7 +99,7 @@ public class WordPressController : ControllerBase
     }
 
     [HttpPut("{siteId}/maintenance")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> SetMaintenance(int siteId, [FromBody] MaintenanceRequest request)
     {
         if (!await CanAccessSiteAsync(siteId)) return Forbid();
@@ -108,7 +108,7 @@ public class WordPressController : ControllerBase
     }
 
     [HttpPut("{siteId}/auto-update")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> SetAutoUpdate(int siteId, [FromBody] AutoUpdateRequest request)
     {
         if (!await CanAccessSiteAsync(siteId)) return Forbid();

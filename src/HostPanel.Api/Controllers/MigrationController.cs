@@ -6,7 +6,7 @@ namespace HostPanel.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/[controller]")]
-[Authorize(Roles = "Admin")]
+[Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
 public class MigrationController : ControllerBase
 {
     private readonly PleskMigrationService _migration;

@@ -38,7 +38,7 @@ public class CronJobsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Create(int subscriptionId, [FromBody] CreateCronJobRequest request)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, subscriptionId)) return Forbid();
@@ -67,7 +67,7 @@ public class CronJobsController : ControllerBase
     }
 
     [HttpPut("{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Update(int subscriptionId, int id, [FromBody] UpdateCronJobRequest request)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, subscriptionId)) return Forbid();
@@ -88,7 +88,7 @@ public class CronJobsController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Delete(int subscriptionId, int id)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, subscriptionId)) return Forbid();

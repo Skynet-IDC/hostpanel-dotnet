@@ -36,7 +36,7 @@ public class BackupsController : ControllerBase
     }
 
     [HttpPost("subscriptions/{subscriptionId}/backups")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Create(int subscriptionId)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, subscriptionId)) return Forbid();
@@ -46,7 +46,7 @@ public class BackupsController : ControllerBase
     }
 
     [HttpPost("backups/{backupId}/restore")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Restore(int backupId)
     {
         var backup = await _db.Backups.FindAsync(backupId);

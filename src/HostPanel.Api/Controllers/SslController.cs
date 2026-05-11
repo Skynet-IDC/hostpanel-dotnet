@@ -48,7 +48,7 @@ public class SslController : ControllerBase
     }
 
     [HttpPost("issue")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Issue(int domainId)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -71,7 +71,7 @@ public class SslController : ControllerBase
     }
 
     [HttpPost("toggle-auto-renew")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> ToggleAutoRenew(int domainId)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();

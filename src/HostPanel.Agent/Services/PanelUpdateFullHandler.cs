@@ -19,6 +19,58 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
         var installDir = GetStr(parameters, "installDir") ?? "/opt/hostpanel";
         var branch = GetStr(parameters, "branch") ?? "main";
         var backupDb = parameters.TryGetValue("backupDb", out var bdb) && (bdb is true || bdb?.ToString() == "True");
+        var checkOnly = parameters.TryGetValue("checkOnly", out var co)
+            && (co is true
+                || (co is string cs && bool.TryParse(cs, out var csb) && csb)
+                || (co is JsonElement coj
+                    && (coj.ValueKind == JsonValueKind.True
+                        || (coj.ValueKind == JsonValueKind.String && bool.TryParse(coj.GetString(), out var jcsb) && jcsb))));
+
+        // Short-circuit for check-only requests — compare local vs remote version.json, no file/service mutation
+        if (checkOnly)
+        {
+            var localVerFile = Path.Combine(installDir, "version.json");
+            var remoteVerFile = Path.Combine(sourceDir, "version.json");
+            var localVer = "0.0.0";
+            var remoteVer = "0.0.0";
+            try
+            {
+                if (File.Exists(localVerFile))
+                {
+                    var j = JsonSerializer.Deserialize<JsonElement>(await File.ReadAllTextAsync(localVerFile, ct));
+                    if (j.TryGetProperty("version", out var lv))
+                        localVer = lv.GetString() ?? localVer;
+                }
+            }
+            catch { }
+            try
+            {
+                if (File.Exists(remoteVerFile))
+                {
+                    var j = JsonSerializer.Deserialize<JsonElement>(await File.ReadAllTextAsync(remoteVerFile, ct));
+                    if (j.TryGetProperty("version", out var rv))
+                        remoteVer = rv.GetString() ?? remoteVer;
+                }
+            }
+            catch { }
+
+            bool updateAvailable;
+            try { updateAvailable = remoteVer != "0.0.0" && new Version(remoteVer) > new Version(localVer); }
+            catch { updateAvailable = remoteVer != localVer && remoteVer != "0.0.0"; }
+
+            return new AgentResult
+            {
+                Success = true,
+                Data = new()
+                {
+                    ["currentVersion"] = localVer,
+                    ["latestVersion"] = remoteVer,
+                    ["updateAvailable"] = updateAvailable,
+                    ["sourceExists"] = Directory.Exists(sourceDir),
+                    ["checkOnly"] = true
+                }
+            };
+        }
 
         var log = new List<string>();
         var backupDir = $"{installDir}_backup_{DateTime.UtcNow:yyyyMMdd_HHmmss}";

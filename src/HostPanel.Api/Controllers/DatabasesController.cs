@@ -63,7 +63,7 @@ public class DatabasesController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Create([FromBody] CreateDatabaseRequest request)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, request.SubscriptionId)) return Forbid();
@@ -117,7 +117,7 @@ public class DatabasesController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Delete(int id)
     {
         if (!await _auth.CanAccessDatabaseAsync(User, id)) return Forbid();
@@ -144,7 +144,7 @@ public class DatabasesController : ControllerBase
     }
 
     [HttpGet("status")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> GetEngineStatus()
     {
         var results = new List<object>();

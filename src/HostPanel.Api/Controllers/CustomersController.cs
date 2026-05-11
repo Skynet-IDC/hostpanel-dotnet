@@ -13,7 +13,7 @@ namespace HostPanel.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/[controller]")]
-[Authorize(Roles = "Admin,Reseller")]
+[Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
 public class CustomersController : ControllerBase
 {
     private readonly AppDbContext _db;
@@ -138,7 +138,7 @@ public class CustomersController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> Delete(string id)
     {
         var user = await _userManager.FindByIdAsync(id);

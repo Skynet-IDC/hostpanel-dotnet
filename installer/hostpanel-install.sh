@@ -419,6 +419,12 @@ deploy_hostpanel() {
     mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$BACKUP_DIR" "$SSL_DIR"
     mkdir -p /var/run/hostpanel
 
+    # SSL dir needs www-data write access — the API (HostPanel.Modules.Ssl.SslService) runs
+    # as www-data and writes the Let's Encrypt account key + per-domain cert files into $SSL_DIR.
+    # 750 keeps key material unreadable to other users; nginx (also www-data) can still read.
+    chown www-data:www-data "$SSL_DIR"
+    chmod 750 "$SSL_DIR"
+
     # Generate agent token
     AGENT_TOKEN=$(openssl rand -base64 32)
     echo "$AGENT_TOKEN" > "${CONFIG_DIR}/agent.token"

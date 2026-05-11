@@ -11,7 +11,7 @@ namespace HostPanel.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/ha")]
-[Authorize(Roles = "Admin")]
+[Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
 public class HighAvailabilityController : ControllerBase
 {
     private readonly AppDbContext _db;

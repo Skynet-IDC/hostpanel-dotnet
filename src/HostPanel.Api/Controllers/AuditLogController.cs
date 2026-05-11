@@ -8,7 +8,7 @@ namespace HostPanel.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/audit")]
-[Authorize(Roles = "Admin")]
+[Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
 public class AuditLogController : ControllerBase
 {
     private readonly AppDbContext _db;

@@ -43,7 +43,7 @@ public class GitDeployController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Configure(int domainId, [FromBody] GitConfigRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -88,7 +88,7 @@ public class GitDeployController : ControllerBase
     }
 
     [HttpPost("deploy")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> ManualDeploy(int domainId)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();

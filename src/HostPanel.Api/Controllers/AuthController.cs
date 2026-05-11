@@ -49,7 +49,7 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("register")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<ActionResult<AuthResponse>> Register([FromBody] RegisterRequest request)
     {
         var existingUser = await _userManager.FindByEmailAsync(request.Email);

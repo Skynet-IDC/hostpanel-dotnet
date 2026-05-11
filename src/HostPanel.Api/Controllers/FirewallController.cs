@@ -7,7 +7,7 @@ namespace HostPanel.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/[controller]")]
-[Authorize(Roles = "Admin")]
+[Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
 public class FirewallController : ControllerBase
 {
     private readonly IServerAgent _agent;

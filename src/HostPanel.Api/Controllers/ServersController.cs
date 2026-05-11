@@ -10,7 +10,7 @@ namespace HostPanel.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/[controller]")]
-[Authorize(Roles = "Admin")]
+[Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
 public class ServersController : ControllerBase
 {
     private readonly AppDbContext _db;

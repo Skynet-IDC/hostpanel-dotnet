@@ -66,7 +66,7 @@ public class AnalyticsController : ControllerBase
 
     /// <summary>Get resource usage history (CPU, RAM, disk over time).</summary>
     [HttpGet("/api/v1/server/analytics")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> GetServerAnalytics([FromQuery] string period = "day")
     {
         var result = await _agent.ExecuteAsync(new AgentRequest

@@ -4,6 +4,8 @@ using Certes.Acme;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using HostPanel.Core.DTOs;
+using HostPanel.Core.Interfaces;
 using HostPanel.Core.Models;
 using HostPanel.Infrastructure.Data;
 
@@ -14,14 +16,16 @@ public class SslService
     private readonly AppDbContext _db;
     private readonly IConfiguration _config;
     private readonly ILogger<SslService> _logger;
+    private readonly IServerAgent _agent;
     private readonly string _certBasePath;
     private readonly bool _useStaging;
 
-    public SslService(AppDbContext db, IConfiguration config, ILogger<SslService> logger)
+    public SslService(AppDbContext db, IConfiguration config, ILogger<SslService> logger, IServerAgent agent)
     {
         _db = db;
         _config = config;
         _logger = logger;
+        _agent = agent;
         _certBasePath = config["Ssl:CertPath"] ?? "/etc/hostpanel/ssl";
         _useStaging = config.GetValue("Ssl:UseStaging", true);
     }
@@ -84,7 +88,25 @@ public class SslService
             var status = await authz.Resource();
             if (status.Status == Certes.Acme.Resource.AuthorizationStatus.Valid) break;
             if (status.Status == Certes.Acme.Resource.AuthorizationStatus.Invalid)
-                throw new InvalidOperationException($"ACME validation failed for {domain.Name}");
+            {
+                // Capture LE's specific failure reason from the authz.Challenges array
+                var detail = "no detail provided by ACME server";
+                try
+                {
+                    var failedChallenges = status.Challenges?
+                        .Where(c => c.Error is not null)
+                        .Select(c => $"[{c.Type}] {c.Error?.Type ?? "?"}: {c.Error?.Detail ?? "?"}")
+                        .ToArray();
+                    if (failedChallenges is { Length: > 0 })
+                        detail = string.Join(" | ", failedChallenges);
+                }
+                catch (Exception ex)
+                {
+                    detail = $"(failed to extract challenge errors: {ex.Message})";
+                }
+                _logger.LogError("ACME validation failed for {Domain}. LE response: {Detail}", domain.Name, detail);
+                throw new InvalidOperationException($"ACME validation failed for {domain.Name}: {detail}");
+            }
         }
 
         // Generate certificate
@@ -103,6 +125,35 @@ public class SslService
 
         await File.WriteAllTextAsync(certPath, cert.ToPem(), cancellationToken);
         await File.WriteAllTextAsync(keyPath, privateKey.ToPem(), cancellationToken);
+
+        // Reconfigure nginx vhost to listen on :443 with the new cert and redirect HTTP -> HTTPS
+        // (keeping /.well-known/acme-challenge/ on plain HTTP so renewals via HTTP-01 still work)
+        var vhostResult = await _agent.ExecuteAsync(new AgentRequest
+        {
+            Method = AgentMethods.NginxCreateVhost,
+            Params = new Dictionary<string, object?>
+            {
+                ["domain"] = domain.Name,
+                ["docRoot"] = domain.DocumentRoot,
+                ["phpVersion"] = domain.PhpVersion ?? "8.3",
+                ["sslCertPath"] = certPath,
+                ["sslKeyPath"] = keyPath
+            }
+        }, cancellationToken);
+
+        // Two-level success check: outer envelope (Error is null) AND inner handler result (Result.Success).
+        // `IsSuccess` alone only checks the envelope; handler-level failures show up in Result.Success=false
+        // with the actual error message in Result.Data["error"].
+        var vhostHandlerOk = vhostResult.IsSuccess && vhostResult.Result?.Success == true;
+        if (!vhostHandlerOk)
+        {
+            var errMsg = vhostResult.Error?.Message;
+            if (string.IsNullOrEmpty(errMsg) && vhostResult.Result?.Data is { } data
+                && data.TryGetValue("error", out var e))
+                errMsg = e?.ToString();
+            _logger.LogWarning("SSL issued for {Domain} but nginx vhost reconfigure failed: {Error}",
+                domain.Name, errMsg ?? "(no detail)");
+        }
 
         // Cleanup challenge file
         try { File.Delete(challengePath); } catch { }

@@ -37,7 +37,7 @@ public class ServicePlansController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<ActionResult<ServicePlan>> Create([FromBody] ServicePlan plan)
     {
         _db.ServicePlans.Add(plan);
@@ -46,7 +46,7 @@ public class ServicePlansController : ControllerBase
     }
 
     [HttpPut("{id}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<ActionResult<ServicePlan>> Update(int id, [FromBody] ServicePlan updated)
     {
         var plan = await _db.ServicePlans.FindAsync(id);
@@ -72,7 +72,7 @@ public class ServicePlansController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> Delete(int id)
     {
         var plan = await _db.ServicePlans.FindAsync(id);

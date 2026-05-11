@@ -34,8 +34,15 @@ public class WordPressToolkit
 
         _logger.LogInformation("Installing WordPress on {Domain}", domain.Name);
 
+        // Pick http:// when SSL isn't enabled yet — pinning https:// before issue_ssl runs
+        // leaves WP_HOME/WP_SITEURL pointing at a port that nginx isn't listening on, which
+        // creates a fresh-install redirect loop. After SSL is issued, callers should run
+        // `wp option update home/siteurl https://...` or re-issue with --skip-config.
+        var scheme = domain.SslEnabled ? "https" : "http";
+        var siteUrl = $"{scheme}://{domain.Name}";
+
         // Create MySQL database for WordPress
-        await _agent.ExecuteAsync(new AgentRequest
+        var installResult = await _agent.ExecuteAsync(new AgentRequest
         {
             Method = "wordpress.install",
             Params = new Dictionary<string, object?>
@@ -45,7 +52,7 @@ public class WordPressToolkit
                 ["dbName"] = dbName,
                 ["dbUser"] = dbUser,
                 ["dbPass"] = dbPass,
-                ["siteUrl"] = $"https://{domain.Name}",
+                ["siteUrl"] = siteUrl,
                 ["siteTitle"] = siteTitle,
                 ["adminUser"] = adminUser,
                 ["adminPassword"] = adminPassword,
@@ -53,12 +60,22 @@ public class WordPressToolkit
             }
         }, ct);
 
+        if (!installResult.IsSuccess || installResult.Result?.Success != true)
+        {
+            var err = installResult.Error?.Message;
+            if (string.IsNullOrEmpty(err) && installResult.Result?.Data is { } d
+                && d.TryGetValue("error", out var e))
+                err = e?.ToString();
+            _logger.LogError("WordPress install failed on {Domain}: {Error}", domain.Name, err ?? "(unknown)");
+            throw new InvalidOperationException($"WordPress install failed: {err ?? "(unknown)"}");
+        }
+
         var site = new WordPressSite
         {
             DomainId = domainId,
             Path = "/",
             Version = "latest",
-            SiteUrl = $"https://{domain.Name}",
+            SiteUrl = siteUrl,
             AdminUser = adminUser,
             DbName = dbName,
             DbUser = dbUser,

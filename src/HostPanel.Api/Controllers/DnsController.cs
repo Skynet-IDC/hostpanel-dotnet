@@ -43,7 +43,7 @@ public class DnsController : ControllerBase
     }
 
     [HttpPost("domains/{domainId}/dns")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> AddRecord(int domainId, [FromBody] AddDnsRecordRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -97,7 +97,7 @@ public class DnsController : ControllerBase
     }
 
     [HttpPut("dns/{recordId}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> UpdateRecord(int recordId, [FromBody] UpdateDnsRecordRequest request)
     {
         var record = await _db.DnsRecords
@@ -123,7 +123,7 @@ public class DnsController : ControllerBase
     }
 
     [HttpDelete("dns/{recordId}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> DeleteRecord(int recordId)
     {
         var record = await _db.DnsRecords

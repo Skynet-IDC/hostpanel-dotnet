@@ -38,7 +38,7 @@ public class FtpController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Create(int subscriptionId, [FromBody] CreateFtpRequest request)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, subscriptionId)) return Forbid();
@@ -81,7 +81,7 @@ public class FtpController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Delete(int subscriptionId, int id)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, subscriptionId)) return Forbid();

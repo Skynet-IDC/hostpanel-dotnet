@@ -7,7 +7,7 @@ namespace HostPanel.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/server/updates")]
-[Authorize(Roles = "Admin")]
+[Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
 public class ServerUpdatesController : ControllerBase
 {
     private readonly IServerAgent _agent;

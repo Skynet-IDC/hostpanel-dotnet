@@ -38,7 +38,7 @@ public class EmailController : ControllerBase
     }
 
     [HttpPost("domains/{domainId}/mailboxes")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> CreateMailbox(int domainId, [FromBody] CreateMailboxRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -58,7 +58,7 @@ public class EmailController : ControllerBase
     }
 
     [HttpDelete("mailboxes/{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> DeleteMailbox(int id)
     {
         if (!await _auth.CanAccessMailboxAsync(User, id)) return Forbid();
@@ -75,7 +75,7 @@ public class EmailController : ControllerBase
     }
 
     [HttpPut("mailboxes/{id}/password")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> ChangePassword(int id, [FromBody] ChangePasswordRequest request)
     {
         if (!await _auth.CanAccessMailboxAsync(User, id)) return Forbid();
@@ -106,7 +106,7 @@ public class EmailController : ControllerBase
     }
 
     [HttpPost("domains/{domainId}/aliases")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> CreateAlias(int domainId, [FromBody] CreateAliasRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -126,7 +126,7 @@ public class EmailController : ControllerBase
     }
 
     [HttpDelete("aliases/{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> DeleteAlias(int id)
     {
         var alias = await _db.MailAliases.FindAsync(id);
@@ -142,7 +142,7 @@ public class EmailController : ControllerBase
     // --- Catch-All ---
 
     [HttpPut("domains/{domainId}/catchall")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> SetCatchAll(int domainId, [FromBody] CatchAllRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -182,7 +182,7 @@ public class EmailController : ControllerBase
     // --- SMTP Relay Configuration ---
 
     [HttpGet("mail/relay")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> GetRelay()
     {
         var relay = await _db.Set<Core.Models.SmtpRelayConfig>().FirstOrDefaultAsync(r => r.IsGlobal);
@@ -200,7 +200,7 @@ public class EmailController : ControllerBase
     }
 
     [HttpPut("mail/relay")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> SetRelay([FromBody] SetRelayRequest request)
     {
         var relay = await _db.Set<Core.Models.SmtpRelayConfig>().FirstOrDefaultAsync(r => r.IsGlobal);

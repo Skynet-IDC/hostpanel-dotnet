@@ -25,7 +25,7 @@ public class SecurityScanController : ControllerBase
 
     /// <summary>ClamAV scan on a domain's document root.</summary>
     [HttpPost("domains/{domainId}/scan")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> ScanDomain(int domainId)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -44,7 +44,7 @@ public class SecurityScanController : ControllerBase
 
     /// <summary>Fail2Ban status and management.</summary>
     [HttpGet("security/fail2ban")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> Fail2BanStatus()
     {
         var result = await _agent.ExecuteAsync(new AgentRequest
@@ -56,7 +56,7 @@ public class SecurityScanController : ControllerBase
     }
 
     [HttpPost("security/fail2ban/unban")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> Fail2BanUnban([FromBody] UnbanRequest request)
     {
         var result = await _agent.ExecuteAsync(new AgentRequest
@@ -73,7 +73,7 @@ public class SecurityScanController : ControllerBase
 
     /// <summary>Full server malware scan.</summary>
     [HttpPost("security/scan-server")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
     public async Task<IActionResult> ScanServer()
     {
         var result = await _agent.ExecuteAsync(new AgentRequest

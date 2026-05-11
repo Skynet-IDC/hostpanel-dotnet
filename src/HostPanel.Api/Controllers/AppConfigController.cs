@@ -43,7 +43,7 @@ public class AppConfigController : ControllerBase
     }
 
     [HttpPut]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Configure(int domainId, [FromBody] ConfigureAppRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -97,7 +97,7 @@ public class AppConfigController : ControllerBase
 
     /// <summary>Run build command (npm run build, prisma migrate, etc.)</summary>
     [HttpPost("build")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Build(int domainId)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -123,7 +123,7 @@ public class AppConfigController : ControllerBase
 
     /// <summary>Restart the app (systemd restart, touch tmp/restart.txt, or pm2 restart).</summary>
     [HttpPost("restart")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Restart(int domainId)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -148,7 +148,7 @@ public class AppConfigController : ControllerBase
 
     /// <summary>Manage .env file for the app.</summary>
     [HttpGet("env")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> GetEnv(int domainId)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -157,7 +157,7 @@ public class AppConfigController : ControllerBase
     }
 
     [HttpPut("env")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> SetEnv(int domainId, [FromBody] SetEnvRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();

@@ -65,11 +65,34 @@ public class SubscriptionReconciler : IReconciler
             _logger.LogWarning("Failed to set quota for {User}: {Error}",
                 config.SystemUsername, quotaResult.Error?.Message);
 
+        // Step 3: Create nginx vhost for main domain (when SubscriptionsController.Create
+        // populated MainDomain in the config). Additional domains created later via
+        // DomainsController.Create call the agent directly.
+        if (!string.IsNullOrEmpty(config.MainDomain) && !string.IsNullOrEmpty(config.MainDomainDocRoot))
+        {
+            var vhostResult = await _agent.ExecuteAsync(new AgentRequest
+            {
+                Method = AgentMethods.NginxCreateVhost,
+                Params = new Dictionary<string, object?>
+                {
+                    ["domain"] = config.MainDomain,
+                    ["docRoot"] = config.MainDomainDocRoot,
+                    ["phpVersion"] = config.PhpVersion ?? "8.3"
+                },
+                TraceId = traceId
+            }, cancellationToken);
+
+            if (!vhostResult.IsSuccess)
+                _logger.LogWarning("Failed to create nginx vhost for {Domain}: {Error}",
+                    config.MainDomain, vhostResult.Error?.Message);
+        }
+
         var actualConfig = JsonSerializer.Serialize(new
         {
             config.SystemUsername,
             homeDir = $"/var/www/{config.SystemUsername}",
             config.DiskQuotaMb,
+            mainDomain = config.MainDomain,
             provisionedAt = DateTime.UtcNow
         });
 
@@ -99,5 +122,8 @@ public class SubscriptionReconciler : IReconciler
 public record SubscriptionConfig(
     string SystemUsername,
     long DiskQuotaMb,
-    long BandwidthLimitMb
+    long BandwidthLimitMb,
+    string? MainDomain = null,
+    string? MainDomainDocRoot = null,
+    string? PhpVersion = null
 );

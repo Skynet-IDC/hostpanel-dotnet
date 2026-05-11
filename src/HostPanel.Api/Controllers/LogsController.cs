@@ -68,7 +68,7 @@ public class LogsController : ControllerBase
     }
 
     [HttpGet("mail")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> GetMailLog([FromQuery] int lines = 100)
     {
         var result = await _agent.ExecuteAsync(new AgentRequest

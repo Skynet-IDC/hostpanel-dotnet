@@ -65,7 +65,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<ActionResult<SubscriptionDto>> Create([FromBody] CreateSubscriptionRequest request)
     {
         var plan = await _db.ServicePlans.FindAsync(request.ServicePlanId);
@@ -107,7 +107,9 @@ public class SubscriptionsController : ControllerBase
         _db.Domains.Add(domain);
         await _db.SaveChangesAsync();
 
-        // Enqueue for reconciliation
+        // Enqueue for reconciliation. Pass main-domain info so the reconciler can call
+        // nginx.createVhost in step 3 (otherwise the domain has a DB row + docroot but
+        // nginx never serves it).
         await _reconciler.EnqueueAsync(
             "subscription",
             subscription.Id,
@@ -115,7 +117,10 @@ public class SubscriptionsController : ControllerBase
             JsonSerializer.Serialize(new SubscriptionConfig(
                 systemUsername,
                 plan.DiskQuotaMb,
-                plan.BandwidthLimitMb
+                plan.BandwidthLimitMb,
+                MainDomain: domain.Name,
+                MainDomainDocRoot: domain.DocumentRoot,
+                PhpVersion: "8.3"
             ))
         );
 
@@ -139,7 +144,7 @@ public class SubscriptionsController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Delete(int id)
     {
         var sub = await _db.Subscriptions

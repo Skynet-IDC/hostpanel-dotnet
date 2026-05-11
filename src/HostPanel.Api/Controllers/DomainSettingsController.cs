@@ -22,7 +22,7 @@ public class DomainSettingsController : ControllerBase
 
     /// <summary>Enable/disable hotlink protection.</summary>
     [HttpPut("hotlink-protection")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> SetHotlinkProtection(int domainId, [FromBody] HotlinkProtectionRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -44,7 +44,7 @@ public class DomainSettingsController : ControllerBase
 
     /// <summary>IP deny manager - block IPs at the domain level via .htaccess or Nginx.</summary>
     [HttpPut("ip-deny")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> SetIpDeny(int domainId, [FromBody] IpDenyRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
@@ -64,7 +64,7 @@ public class DomainSettingsController : ControllerBase
 
     /// <summary>Directory password protection.</summary>
     [HttpPut("password-protect")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> PasswordProtectDirectory(int domainId, [FromBody] PasswordProtectRequest request)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();

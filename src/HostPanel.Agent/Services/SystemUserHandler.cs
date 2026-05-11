@@ -42,13 +42,34 @@ public class SystemCreateUserHandler : IAgentMethodHandler
         // Set ownership
         await ProcessRunner.RunAsync("/bin/chown", ["-R", $"{username}:{username}", homeDir], cancellationToken);
 
-        // Create default index.html
+        // Add www-data to this tenant's group so nginx can traverse the home dir (drwxr-x---)
+        // and serve files from httpdocs/. Without this, requests 13 (Permission denied) on realpath().
+        await ProcessRunner.RunAsync("/usr/sbin/usermod", ["-aG", username, "www-data"], cancellationToken);
+
+        // chmod 2775 on httpdocs so www-data (now in the tenant's group) can write the ACME
+        // HTTP-01 challenge file. setgid (2xxx) makes new files inherit the tenant's group,
+        // keeping ownership consistent if the user later uploads files via FTP/SFTP.
+        var httpdocsDir = Path.Combine(homeDir, "httpdocs");
+        await ProcessRunner.RunAsync("/bin/chmod", ["2775", httpdocsDir], cancellationToken);
+
+        // Restart php-fpm so running workers pick up the new group membership (usermod -aG
+        // doesn't refresh running processes). Without this, the first request to the new
+        // tenant's docroot returns "Primary script unknown" until FPM is manually restarted.
+        // We restart every installed FPM version (idempotent if a version isn't installed).
+        foreach (var v in new[] { "8.1", "8.2", "8.3" })
+        {
+            await ProcessRunner.RunAsync("/usr/bin/systemctl",
+                ["restart", $"php{v}-fpm"], cancellationToken);
+        }
+
+        // Create default index.html (owned by the tenant so the user can replace it)
         var indexPath = Path.Combine(homeDir, "httpdocs", "index.html");
         if (!File.Exists(indexPath))
         {
             await File.WriteAllTextAsync(indexPath,
                 $"<html><body><h1>Welcome</h1><p>Site for {username} is being set up.</p></body></html>",
                 cancellationToken);
+            await ProcessRunner.RunAsync("/bin/chown", [$"{username}:{username}", indexPath], cancellationToken);
         }
 
         return new AgentResult

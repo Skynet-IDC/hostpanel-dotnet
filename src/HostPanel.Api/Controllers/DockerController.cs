@@ -38,7 +38,7 @@ public class DockerController : ControllerBase
     }
 
     [HttpPost]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Create(int subscriptionId, [FromBody] CreateContainerRequest request)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, subscriptionId)) return Forbid();
@@ -82,19 +82,19 @@ public class DockerController : ControllerBase
     }
 
     [HttpPost("{id}/start")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Start(int subscriptionId, int id) => await ContainerAction(subscriptionId, id, "docker.start");
 
     [HttpPost("{id}/stop")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Stop(int subscriptionId, int id) => await ContainerAction(subscriptionId, id, "docker.stop");
 
     [HttpPost("{id}/restart")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Restart(int subscriptionId, int id) => await ContainerAction(subscriptionId, id, "docker.restart");
 
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin,Reseller")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
     public async Task<IActionResult> Delete(int subscriptionId, int id)
     {
         if (!await _auth.CanAccessSubscriptionAsync(User, subscriptionId)) return Forbid();

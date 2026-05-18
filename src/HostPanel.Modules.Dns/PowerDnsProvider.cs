@@ -55,8 +55,22 @@ public class PowerDnsProvider : IDnsProvider
 
     public async Task<DnsProviderRecord> AddRecordAsync(string zoneId, DnsRecordType type, string name, string value, int ttl = 3600, int? priority = null, CancellationToken cancellationToken = default)
     {
-        var recordName = name.EndsWith('.') ? name : $"{name}.";
-        var recordValue = type == DnsRecordType.MX ? $"{priority ?? 10} {value}" : value;
+        // PowerDNS requires fully qualified names: "sub.zone.tld."
+        // If name is "@" or already FQDN, handle accordingly.
+        string recordName;
+        if (name == "@")
+            recordName = zoneId.EndsWith('.') ? zoneId : $"{zoneId}.";
+        else if (name.EndsWith('.'))
+            recordName = name;
+        else
+            recordName = $"{name}.{(zoneId.EndsWith('.') ? zoneId : zoneId + ".")}";
+        // PowerDNS requires MX content as "priority target", TXT as quoted strings
+        var recordValue = type switch
+        {
+            DnsRecordType.MX => $"{priority ?? 10} {value}",
+            DnsRecordType.TXT => value.StartsWith('"') ? value : $"\"{value}\"",
+            _ => value
+        };
 
         var payload = new
         {

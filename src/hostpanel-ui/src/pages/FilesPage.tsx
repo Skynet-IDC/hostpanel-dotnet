@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ChangeEvent } from 'react';
 import api from '../api/client';
+import { Card, Empty, IconBtn, PageHead } from '../components/ui/primitives';
+import { Icons } from '../components/ui/Icons';
 
 interface FileEntry {
   name: string;
@@ -9,34 +11,40 @@ interface FileEntry {
   modifiedAt: string;
 }
 
+function formatSize(bytes: number) {
+  if (bytes === 0) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function FilesPage() {
-  const [domainId, setDomainId] = useState<number | null>(null);
   const [domains, setDomains] = useState<{ id: number; name: string }[]>([]);
+  const [domainId, setDomainId] = useState<number | null>(null);
   const [currentPath, setCurrentPath] = useState('/');
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get('/domains').then((res) => {
-      setDomains(res.data);
-      if (res.data.length > 0) setDomainId(res.data[0].id);
-    }).finally(() => setLoading(false));
+    api.get<{ id: number; name: string }[]>('/domains')
+      .then(r => { setDomains(r.data); if (r.data.length > 0) setDomainId(r.data[0].id); })
+      .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
+  const load = async () => {
     if (!domainId) return;
-    setLoading(true);
-    api.get(`/domains/${domainId}/files`, { params: { path: currentPath } })
-      .then((res) => setEntries(res.data.entries))
-      .catch(() => setEntries([]))
-      .finally(() => setLoading(false));
-  }, [domainId, currentPath]);
-
-  const navigate = (entry: FileEntry) => {
-    if (entry.isDirectory) {
-      setCurrentPath(entry.path);
+    setErr(null);
+    try {
+      const { data } = await api.get(`/domains/${domainId}/files`, { params: { path: currentPath } });
+      setEntries(data.entries ?? []);
+    } catch (e) {
+      setEntries([]);
+      setErr(e instanceof Error ? e.message : 'Failed to load files');
     }
   };
+
+  useEffect(() => { void load(); }, [domainId, currentPath]);
 
   const goUp = () => {
     const parts = currentPath.split('/').filter(Boolean);
@@ -44,99 +52,98 @@ export function FilesPage() {
     setCurrentPath('/' + parts.join('/'));
   };
 
-  const handleDelete = async (entry: FileEntry) => {
-    if (!confirm(`Delete ${entry.name}?`)) return;
-    await api.delete(`/domains/${domainId}/files`, { params: { path: entry.path } });
-    // Refresh
-    const res = await api.get(`/domains/${domainId}/files`, { params: { path: currentPath } });
-    setEntries(res.data.entries);
-  };
-
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const upload = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !domainId) return;
-    const formData = new FormData();
-    formData.append('file', file);
-    await api.post(`/domains/${domainId}/files/upload?path=${encodeURIComponent(currentPath)}`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    const res = await api.get(`/domains/${domainId}/files`, { params: { path: currentPath } });
-    setEntries(res.data.entries);
-    e.target.value = '';
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      await api.post(`/domains/${domainId}/files/upload?path=${encodeURIComponent(currentPath)}`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      await load();
+    } catch (e2) {
+      const msg = e2 && typeof e2 === 'object' && 'response' in e2 ? (e2 as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      alert(msg ?? 'Upload failed');
+    } finally {
+      e.target.value = '';
+    }
   };
 
-  const formatSize = (bytes: number) => {
-    if (bytes === 0) return '-';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  const remove = async (entry: FileEntry) => {
+    if (!domainId || !confirm(`Delete ${entry.name}?`)) return;
+    try {
+      await api.delete(`/domains/${domainId}/files`, { params: { path: entry.path } });
+      await load();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      alert(msg ?? 'Delete failed');
+    }
   };
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">File Manager</h2>
-        <select
-          value={domainId ?? ''}
-          onChange={(e) => { setDomainId(Number(e.target.value)); setCurrentPath('/'); }}
-          className="border border-gray-300 rounded px-3 py-2"
-        >
-          {domains.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
-      </div>
+    <>
+      <PageHead
+        title="File manager"
+        sub={currentPath}
+        actions={
+          <>
+            {domains.length > 0 && (
+              <select
+                className="select"
+                value={domainId ?? ''}
+                onChange={e => { setDomainId(Number(e.target.value)); setCurrentPath('/'); }}
+                style={{ maxWidth: 240 }}
+              >
+                {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            )}
+            <button className="btn" onClick={goUp} disabled={currentPath === '/'}><Icons.chevL />Up</button>
+            <label className="btn primary" style={{ cursor: 'pointer' }}>
+              <Icons.upload />Upload
+              <input type="file" style={{ display: 'none' }} onChange={upload} />
+            </label>
+          </>
+        }
+      />
 
-      <div className="bg-white rounded-lg shadow">
-        {/* Breadcrumb / toolbar */}
-        <div className="flex items-center gap-3 p-4 border-b border-gray-200">
-          <button onClick={goUp} disabled={currentPath === '/'} className="px-3 py-1 bg-gray-100 rounded hover:bg-gray-200 disabled:opacity-50 text-sm">
-            Up
-          </button>
-          <span className="font-mono text-sm text-gray-600 flex-1">{currentPath}</span>
-          <label className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 cursor-pointer text-sm">
-            Upload
-            <input type="file" className="hidden" onChange={handleUpload} />
-          </label>
-        </div>
+      {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
 
-        {loading ? (
-          <div className="p-8 text-center text-gray-500">Loading...</div>
-        ) : (
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Size</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Modified</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {entries.length === 0 ? (
-                <tr><td colSpan={4} className="px-6 py-8 text-center text-gray-500">Empty directory</td></tr>
-              ) : entries.map((entry) => (
-                <tr key={entry.path} className="hover:bg-gray-50">
-                  <td className="px-6 py-3">
-                    <button
-                      onClick={() => navigate(entry)}
-                      className={`flex items-center gap-2 ${entry.isDirectory ? 'text-blue-600 hover:text-blue-800 font-medium' : 'text-gray-900'}`}
+      <Card flush>
+        {loading ? <div className="muted" style={{ padding: 16 }}>Loading…</div>
+          : entries.length === 0 ? <Empty icon="folder" title="Empty directory" sub="Upload a file to get started." />
+          : (
+            <table className="tbl">
+              <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th style={{ textAlign: 'right' }} /></tr></thead>
+              <tbody>
+                {entries.map(entry => {
+                  const Icon = entry.isDirectory ? Icons.folder : Icons.file;
+                  return (
+                    <tr
+                      key={entry.path}
+                      style={{ cursor: entry.isDirectory ? 'pointer' : 'default' }}
+                      onClick={() => entry.isDirectory && setCurrentPath(entry.path)}
                     >
-                      <span className="text-lg">{entry.isDirectory ? '📁' : '📄'}</span>
-                      {entry.name}
-                    </button>
-                  </td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{formatSize(entry.sizeBytes)}</td>
-                  <td className="px-6 py-3 text-sm text-gray-500">{new Date(entry.modifiedAt).toLocaleString()}</td>
-                  <td className="px-6 py-3">
-                    <button onClick={() => handleDelete(entry)} className="text-red-600 hover:text-red-800 text-sm">Delete</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </div>
+                      <td>
+                        <div className="row gap-2">
+                          <Icon style={{ color: entry.isDirectory ? 'var(--primary-400)' : 'var(--muted)' }} />
+                          <span style={{ fontWeight: entry.isDirectory ? 600 : 400 }}>{entry.name}</span>
+                        </div>
+                      </td>
+                      <td className="mono muted">{entry.isDirectory ? '—' : formatSize(entry.sizeBytes)}</td>
+                      <td className="muted mono" style={{ fontSize: 11.5 }}>{new Date(entry.modifiedAt).toLocaleString()}</td>
+                      <td onClick={e => e.stopPropagation()}>
+                        <div className="row-actions">
+                          <IconBtn icon="trash" danger title="Delete" onClick={() => remove(entry)} />
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+      </Card>
+    </>
   );
 }

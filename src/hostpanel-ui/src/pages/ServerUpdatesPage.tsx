@@ -1,55 +1,164 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from '../api/client';
+import { Card, Empty, PageHead, Stat } from '../components/ui/primitives';
+import { Icons } from '../components/ui/Icons';
 
-export function ServerUpdatesPage() {
-  const [updates, setUpdates] = useState<string>('');
-  const [count, setCount] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [installing, setInstalling] = useState(false);
+interface PanelVersionInfo {
+  currentVersion?: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
+}
 
-  const checkUpdates = async () => {
-    setLoading(true);
-    await api.post('/server/updates/check');
-    const r = await api.get('/server/updates');
-    setUpdates(r.data.packages || '[]');
-    setCount(r.data.count || 0);
-    setLoading(false);
+function PanelUpdateCard() {
+  const [info, setInfo] = useState<PanelVersionInfo | null>(null);
+  const [busy, setBusy] = useState<'check' | 'update' | 'rollback' | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setBusy('check'); setMsg(null);
+    try {
+      const r = await api.get<PanelVersionInfo>('/panel/check-update');
+      setInfo(r.data);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Check failed');
+    } finally { setBusy(null); }
   };
 
-  const installUpdates = async (securityOnly = false) => {
-    if (!confirm(securityOnly ? 'Install security updates?' : 'Install all updates?')) return;
-    setInstalling(true);
-    await api.post('/server/updates/install', { securityOnly });
-    setInstalling(false);
-    checkUpdates();
+  useEffect(() => { void refresh(); }, []);
+
+  const update = async () => {
+    if (!confirm('Update the HostPanel itself? The API will restart and may be unreachable for ~10s.')) return;
+    setBusy('update'); setMsg(null);
+    try {
+      await api.post('/panel/update');
+      setMsg('Update started — backup taken, new binaries built, services restarted. Refresh in 30s.');
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Update failed');
+    } finally { setBusy(null); }
+  };
+
+  const rollback = async () => {
+    if (!confirm('Roll back to the previous panel version? Files + DB restored from the last backup.')) return;
+    setBusy('rollback'); setMsg(null);
+    try {
+      await api.post('/panel/rollback');
+      setMsg('Rollback initiated.');
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Rollback failed');
+    } finally { setBusy(null); }
   };
 
   return (
-    <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">Server Updates</h2>
+    <Card title="HostPanel update" sub="Update the panel itself (separate from OS updates above).">
+      <div className="row gap-3" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+        <div>
+          <div className="muted" style={{ fontSize: 11 }}>Current</div>
+          <div className="mono" style={{ fontWeight: 600 }}>{info?.currentVersion ?? '—'}</div>
+        </div>
+        <div>
+          <div className="muted" style={{ fontSize: 11 }}>Latest</div>
+          <div className="mono" style={{ fontWeight: 600 }}>{info?.latestVersion ?? '—'}</div>
+        </div>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+          <button className="btn" onClick={refresh} disabled={busy !== null}><Icons.refresh />{busy === 'check' ? 'Checking…' : 'Check'}</button>
+          <button className="btn primary" onClick={update} disabled={busy !== null || !info?.updateAvailable}>
+            {busy === 'update' ? 'Updating…' : 'Update panel'}
+          </button>
+          <button className="btn" onClick={rollback} disabled={busy !== null}>
+            {busy === 'rollback' ? 'Rolling back…' : 'Rollback'}
+          </button>
+        </div>
+      </div>
+      {msg && <div className="alert info" style={{ marginTop: 12, fontSize: 12 }}>{msg}</div>}
+    </Card>
+  );
+}
 
-      <div className="flex gap-3 mb-6">
-        <button onClick={checkUpdates} disabled={loading} className="bg-blue-600 text-white rounded px-4 py-2 hover:bg-blue-700 disabled:opacity-50">
-          {loading ? 'Checking...' : 'Check for Updates'}
-        </button>
-        <button onClick={() => installUpdates(true)} disabled={installing || count === 0} className="bg-yellow-600 text-white rounded px-4 py-2 hover:bg-yellow-700 disabled:opacity-50">
-          Security Only
-        </button>
-        <button onClick={() => installUpdates(false)} disabled={installing || count === 0} className="bg-green-600 text-white rounded px-4 py-2 hover:bg-green-700 disabled:opacity-50">
-          {installing ? 'Installing...' : `Install All (${count})`}
-        </button>
+interface PackageInfo {
+  full?: string;
+  package_name?: string;
+  current_version?: string;
+  available_version?: string;
+}
+
+export function ServerUpdatesPage() {
+  const [packages, setPackages] = useState<PackageInfo[]>([]);
+  const [count, setCount] = useState(0);
+  const [checked, setChecked] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const check = async () => {
+    setLoading(true); setErr(null);
+    try {
+      await api.post('/server/updates/check');
+      const r = await api.get<{ packages?: string; count?: number }>('/server/updates');
+      const parsed: PackageInfo[] = r.data.packages ? JSON.parse(r.data.packages) : [];
+      setPackages(parsed);
+      setCount(r.data.count ?? parsed.length);
+      setChecked(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Check failed');
+    } finally { setLoading(false); }
+  };
+
+  const install = async (securityOnly: boolean) => {
+    if (!confirm(securityOnly ? 'Install security updates? Some services may restart.' : 'Install ALL updates? Some services may restart.')) return;
+    setInstalling(true); setErr(null);
+    try {
+      await api.post('/server/updates/install', { securityOnly });
+      await check();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Install failed');
+    } finally { setInstalling(false); }
+  };
+
+  return (
+    <>
+      <PageHead
+        title="System updates"
+        sub="apt packages on the underlying OS"
+        actions={
+          <>
+            <button className="btn" onClick={check} disabled={loading}><Icons.refresh />{loading ? 'Checking…' : 'Check for updates'}</button>
+            <button className="btn" onClick={() => install(true)} disabled={installing || count === 0}><Icons.shield />Security only</button>
+            <button className="btn primary" onClick={() => install(false)} disabled={installing || count === 0}>
+              <Icons.download />{installing ? 'Installing…' : `Install all (${count})`}
+            </button>
+          </>
+        }
+      />
+
+      {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
+
+      <div className="stats" style={{ marginBottom: 16, gridTemplateColumns: 'repeat(2, 1fr)' }}>
+        <Stat label="Available updates" icon="refresh" value={String(count)} foot={<span className="muted">{checked ? 'last checked just now' : 'click Check'}</span>} />
+        <Stat label="Status" icon={count === 0 && checked ? 'check2' : 'info'} value={count === 0 && checked ? 'Up to date' : count > 0 ? 'Updates pending' : 'Unknown'} />
       </div>
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <h3 className="text-lg font-semibold mb-4">Available Updates ({count})</h3>
-        {updates ? (
-          <pre className="bg-gray-50 p-4 rounded text-sm font-mono whitespace-pre-wrap max-h-96 overflow-y-auto">{
-            typeof updates === 'string' ? JSON.parse(updates).map((p: any) => p.full || p.package_name).join('\n') : 'No updates available'
-          }</pre>
+      <div style={{ marginBottom: 16 }}><PanelUpdateCard /></div>
+
+      <Card title="Available packages" sub={count === 0 ? 'No updates available' : `${count} package${count === 1 ? '' : 's'}`} flush>
+        {!checked ? (
+          <Empty icon="info" title="No data yet" sub='Click "Check for updates" to scan apt.' />
+        ) : count === 0 ? (
+          <Empty icon="check2" title="System is up to date" sub="Nothing to install." />
         ) : (
-          <p className="text-gray-500">Click "Check for Updates" to scan.</p>
+          <table className="tbl">
+            <thead><tr><th>Package</th><th>Current</th><th>Available</th></tr></thead>
+            <tbody>
+              {packages.map((p, i) => (
+                <tr key={`${p.package_name ?? p.full}-${i}`}>
+                  <td className="mono" style={{ fontWeight: 600 }}>{p.package_name ?? p.full}</td>
+                  <td className="mono muted">{p.current_version ?? '—'}</td>
+                  <td className="mono">{p.available_version ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
-      </div>
-    </div>
+      </Card>
+    </>
   );
 }

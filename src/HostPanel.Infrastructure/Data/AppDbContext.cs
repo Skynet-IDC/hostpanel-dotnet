@@ -36,10 +36,41 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<BrandingConfig> BrandingConfigs => Set<BrandingConfig>();
     public DbSet<AppConfig> AppConfigs => Set<AppConfig>();
     public DbSet<HaSyncState> HaSyncStates => Set<HaSyncState>();
+    public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
+    public DbSet<CustomerBranding> CustomerBrandings => Set<CustomerBranding>();
+    public DbSet<MigrationSource> MigrationSources => Set<MigrationSource>();
+    public DbSet<MigrationJob> MigrationJobs => Set<MigrationJob>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+
+        // CustomerBranding
+        builder.Entity<CustomerBranding>(e =>
+        {
+            e.HasIndex(c => c.UserId).IsUnique();
+            e.HasOne(c => c.User)
+                .WithOne()
+                .HasForeignKey<CustomerBranding>(c => c.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // SystemSetting — unique index on Key (already created in migration 20260517010000)
+        builder.Entity<SystemSetting>(e =>
+        {
+            e.HasIndex(s => s.Key).IsUnique();
+        });
+
+        // MigrationJob — FK to MigrationSource, indexes for common lookups
+        builder.Entity<MigrationJob>(e =>
+        {
+            e.HasOne(j => j.MigrationSource)
+                .WithMany()
+                .HasForeignKey(j => j.MigrationSourceId)
+                .OnDelete(DeleteBehavior.Cascade);
+            e.HasIndex(j => j.State);
+            e.HasIndex(j => new { j.MigrationSourceId, j.SourceDomain });
+        });
 
         // AppUser
         builder.Entity<AppUser>(e =>

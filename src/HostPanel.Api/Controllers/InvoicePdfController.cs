@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -12,8 +13,13 @@ namespace HostPanel.Api.Controllers;
 public class InvoicePdfController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly ILogger<InvoicePdfController> _logger;
 
-    public InvoicePdfController(AppDbContext db) => _db = db;
+    public InvoicePdfController(AppDbContext db, ILogger<InvoicePdfController> logger)
+    {
+        _db = db;
+        _logger = logger;
+    }
 
     [HttpGet("{invoiceId}/pdf")]
     public async Task<IActionResult> DownloadPdf(int invoiceId)
@@ -75,7 +81,67 @@ public class InvoicePdfController : ControllerBase
             </html>
             """;
 
-        var bytes = Encoding.UTF8.GetBytes(html);
-        return File(bytes, "text/html", $"invoice-{invoice.Id:D6}.html");
+        // Bug #52 fix: produce a real PDF (was returning HTML with .html extension).
+        // Shell out to wkhtmltopdf (installed by installer) — stdin html, stdout pdf bytes.
+        // Falls back to HTML if wkhtmltopdf is missing so the endpoint never 500s on a clean dev box.
+        var pdfBytes = await TryRenderPdfAsync(html);
+        if (pdfBytes is null)
+        {
+            _logger.LogWarning("wkhtmltopdf unavailable — falling back to HTML for invoice {Id}", invoice.Id);
+            return File(Encoding.UTF8.GetBytes(html), "text/html", $"invoice-{invoice.Id:D6}.html");
+        }
+        return File(pdfBytes, "application/pdf", $"invoice-{invoice.Id:D6}.pdf");
+    }
+
+    /// <summary>
+    /// Render an HTML document to PDF by piping it through `wkhtmltopdf - -` (stdin/stdout mode).
+    /// Returns null if wkhtmltopdf is missing or fails; caller falls back to HTML.
+    /// </summary>
+    private static async Task<byte[]?> TryRenderPdfAsync(string html)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "wkhtmltopdf",
+                Arguments = "--quiet --enable-local-file-access --encoding utf-8 - -",
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var proc = Process.Start(psi);
+            if (proc is null) return null;
+
+            // Write HTML to stdin
+            var stdinBytes = Encoding.UTF8.GetBytes(html);
+            await proc.StandardInput.BaseStream.WriteAsync(stdinBytes);
+            proc.StandardInput.Close();
+
+            // Read stdout (PDF) and stderr concurrently to avoid pipe deadlock
+            using var stdoutBuf = new MemoryStream();
+            var stdoutTask = proc.StandardOutput.BaseStream.CopyToAsync(stdoutBuf);
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try { await proc.WaitForExitAsync(cts.Token); }
+            catch (OperationCanceledException) { try { proc.Kill(true); } catch { } return null; }
+
+            await stdoutTask;
+            var stderr = await stderrTask;
+
+            if (proc.ExitCode != 0 || stdoutBuf.Length == 0)
+                return null;
+
+            // sanity: PDF must start with %PDF
+            var bytes = stdoutBuf.ToArray();
+            if (bytes.Length < 4 || bytes[0] != 0x25 || bytes[1] != 0x50 || bytes[2] != 0x44 || bytes[3] != 0x46)
+                return null;
+
+            return bytes;
+        }
+        catch (System.ComponentModel.Win32Exception) { return null; /* binary missing */ }
+        catch { return null; }
     }
 }

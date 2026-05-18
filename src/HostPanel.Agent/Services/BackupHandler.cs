@@ -61,15 +61,32 @@ public class BackupRestoreHandler : IAgentMethodHandler
         if (!backupPath.StartsWith("/var/backups/"))
             return new AgentResult { Success = false, Data = new() { ["error"] = "backupPath must be under /var/backups/" } };
 
+        // Rename existing dir as safety net, then extract clean
+        var safetyBackup = $"{homeDir}.pre-restore-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        if (Directory.Exists(homeDir))
+            Directory.Move(homeDir!, safetyBackup);
+
         var result = await ProcessRunner.RunAsync("/bin/tar",
             ["xzf", backupPath, "-C", "/var/www"], ct, timeoutMs: 300_000);
+
+        if (result.ExitCode != 0)
+        {
+            // Rollback: restore the pre-restore copy if extraction failed
+            if (!Directory.Exists(homeDir) && Directory.Exists(safetyBackup))
+                Directory.Move(safetyBackup, homeDir!);
+            return new AgentResult { Success = false, Data = new() { ["error"] = result.StdErr } };
+        }
+
+        // Clean up the safety backup on success
+        if (Directory.Exists(safetyBackup))
+            Directory.Delete(safetyBackup, recursive: true);
 
         if (!string.IsNullOrEmpty(username))
             await ProcessRunner.RunAsync("/bin/chown", ["-R", $"{username}:{username}", homeDir!], ct);
 
         return new AgentResult
         {
-            Success = result.ExitCode == 0,
+            Success = true,
             Data = new() { ["output"] = result.StdOut, ["error"] = result.StdErr }
         };
     }

@@ -1,0 +1,17 @@
+[Unit]
+Description=HostPanel HA watchdog (monitors primary, triggers failover)
+After=network.target hostpanel-api.service
+Wants=hostpanel-api.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/hostpanel/ha-watchdog.env
+ExecStart=/opt/hostpanel/ha/hostpanel-ha-watchdog.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

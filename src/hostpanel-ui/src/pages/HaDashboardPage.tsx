@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import { Badge, Card, Checkbox, Dialog, Empty, Field, PageHead } from '../components/ui/primitives';
+import { Icons } from '../components/ui/Icons';
 
 interface SyncState {
   serverId: number;
@@ -19,105 +21,236 @@ interface SyncState {
   lastHealthCheck?: string;
 }
 
-const strategyNames: Record<number, string> = { 0: 'DNS Swap', 1: 'Floating IP', 2: 'Cloudflare', 3: 'Per-Domain' };
-const roleBadge = (role: string) => {
-  const c: Record<string, string> = { primary: 'bg-blue-100 text-blue-700', standby: 'bg-yellow-100 text-yellow-700', down: 'bg-red-100 text-red-700', recovering: 'bg-purple-100 text-purple-700', decommissioned: 'bg-gray-100 text-gray-500' };
-  return c[role] || 'bg-gray-100 text-gray-500';
-};
+const STRATEGY_NAMES: Record<number, string> = { 0: 'DNS Swap', 1: 'Floating IP', 2: 'Cloudflare', 3: 'Per-Domain' };
+
+function roleTone(role: string): 'primary' | 'warn' | 'danger' | 'info' | 'default' {
+  if (role === 'primary') return 'primary';
+  if (role === 'standby') return 'warn';
+  if (role === 'down') return 'danger';
+  if (role === 'recovering') return 'info';
+  return 'default';
+}
+
+interface ConfigFormState {
+  autoFailback: boolean;
+  syncFiles: boolean;
+  syncDatabases: boolean;
+  syncEmail: boolean;
+  failoverStrategy: number;
+  floatingIp: string;
+  cloudflareApiToken: string;
+  cloudflareZoneId: string;
+}
+
+interface ServerRow { id: number; hostname: string; ipAddress: string; isLocal: boolean; }
 
 export function HaDashboardPage() {
   const [states, setStates] = useState<SyncState[]>([]);
+  const [servers, setServers] = useState<ServerRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
   const [configId, setConfigId] = useState<number | null>(null);
-  const [cfg, setCfg] = useState({ autoFailback: true, syncFiles: true, syncDatabases: true, syncEmail: true, failoverStrategy: 0, floatingIp: '', cloudflareApiToken: '', cloudflareZoneId: '' });
+  const [bootstrapOpen, setBootstrapOpen] = useState(false);
+  const [bootstrap, setBootstrap] = useState({
+    standbyServerId: 0,
+    syncIntervalMinutes: 15,
+    syncDomains: true,
+    syncDatabases: true,
+    syncEmail: true,
+  });
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
+  const [bootstrapErr, setBootstrapErr] = useState<string | null>(null);
+  const [cfg, setCfg] = useState<ConfigFormState>({
+    autoFailback: true, syncFiles: true, syncDatabases: true, syncEmail: true,
+    failoverStrategy: 0, floatingIp: '', cloudflareApiToken: '', cloudflareZoneId: '',
+  });
 
-  const load = () => { api.get('/ha/sync-state').then(r => setStates(r.data)).catch(() => api.get('/ha/status').then(r => setStates(r.data)).catch(() => {})).finally(() => setLoading(false)); };
-  useEffect(() => { load(); }, []);
-
-  const failover = async (id: number) => { if (!confirm('FAILOVER: Promote this server to primary?')) return; await api.post('/ha/failover', { promoteServerId: id }); load(); };
-  const failback = async (id: number) => { if (!confirm('FAILBACK: Sync changes back and restore as primary?')) return; await api.post('/ha/failback', { recoveredServerId: id }); load(); };
-  const promotePermanent = async (id: number) => {
-    const decom = confirm('Also decommission the old primary?\n\nOK = Decommission old primary\nCancel = Keep old as standby');
-    if (!confirm('PERMANENT PROMOTION: This server will be primary from now on. Continue?')) return;
-    await api.post('/ha/promote-permanent', { serverId: id, decommissionOldPrimary: decom });
-    load();
+  const load = async () => {
+    setErr(null);
+    try {
+      const r = await api.get<SyncState[]>('/ha/sync-state').catch(() => api.get<SyncState[]>('/ha/status'));
+      setStates(r.data);
+      const sr = await api.get<ServerRow[]>('/servers').catch(() => ({ data: [] as ServerRow[] }));
+      setServers(sr.data);
+    } catch (e) { setErr(e instanceof Error ? e.message : 'Load failed'); }
+    finally { setLoading(false); }
   };
-  const saveConfig = async () => { if (!configId) return; await api.put(`/ha/sync-state/${configId}`, cfg); setConfigId(null); load(); };
+  useEffect(() => { void load(); }, []);
 
-  if (loading) return <p className="text-gray-500">Loading HA cluster...</p>;
+  const submitBootstrap = async () => {
+    if (!bootstrap.standbyServerId) { setBootstrapErr('Pick a standby server'); return; }
+    setBootstrapBusy(true);
+    setBootstrapErr(null);
+    try {
+      await api.post('/ha/configure-failover', bootstrap);
+      setBootstrapOpen(false);
+      void load();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e
+        ? (e as { response?: { data?: { message?: string } } }).response?.data?.message
+        : null;
+      setBootstrapErr(msg ?? (e instanceof Error ? e.message : 'Configure failed'));
+    } finally {
+      setBootstrapBusy(false);
+    }
+  };
+
+  // Servers that are remote + active + don't yet have an HaSyncState row → eligible to bootstrap as standbys
+  const eligibleStandbys = servers.filter(s => !s.isLocal && !states.some(st => st.serverId === s.id));
+
+  const failover = async (id: number) => {
+    if (!confirm('FAILOVER: Promote this server to primary?')) return;
+    await api.post('/ha/failover', { promoteServerId: id }); void load();
+  };
+  const failback = async (id: number) => {
+    if (!confirm('FAILBACK: Sync changes back and restore as primary?')) return;
+    await api.post('/ha/failback', { recoveredServerId: id }); void load();
+  };
+  const promotePermanent = async (id: number) => {
+    if (!confirm('PERMANENT PROMOTION: This server will be primary from now on. Continue?')) return;
+    const decom = confirm('Also decommission the old primary?\n\nOK = Decommission old primary\nCancel = Keep as standby');
+    await api.post('/ha/promote-permanent', { serverId: id, decommissionOldPrimary: decom });
+    void load();
+  };
+  const saveConfig = async () => {
+    if (!configId) return;
+    await api.put(`/ha/sync-state/${configId}`, cfg);
+    setConfigId(null);
+    void load();
+  };
 
   return (
-    <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">High Availability</h2>
-      <div className="grid grid-cols-1 gap-4 mb-6">
-        {states.map(s => (
-          <div key={s.serverId} className={`bg-white rounded-lg shadow p-6 border-l-4 ${s.isHealthy ? 'border-green-500' : 'border-red-500'}`}>
-            <div className="flex justify-between items-start">
-              <div>
-                <h3 className="text-lg font-semibold">{s.serverHostname}</h3>
-                <p className="text-sm text-gray-500 font-mono">{s.serverIp}</p>
-                <div className="flex gap-2 mt-2 flex-wrap">
-                  <span className={`text-xs px-2 py-0.5 rounded ${roleBadge(s.role)}`}>{s.role}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded ${s.isHealthy ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{s.isHealthy ? 'Healthy' : 'Down'}</span>
-                  {s.failoverStrategy !== undefined && <span className="text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">{strategyNames[s.failoverStrategy]}</span>}
-                  {s.autoFailback && <span className="text-xs px-2 py-0.5 rounded bg-teal-100 text-teal-700">Auto-failback</span>}
-                </div>
-                <div className="text-xs text-gray-400 mt-2 space-y-0.5">
-                  {s.lastSyncAt && <p>Last sync: {new Date(s.lastSyncAt).toLocaleString()}</p>}
-                  {s.lastHealthCheck && <p>Health check: {new Date(s.lastHealthCheck).toLocaleString()}</p>}
-                  {s.failoverTriggeredAt && <p>Failover: {new Date(s.failoverTriggeredAt).toLocaleString()}</p>}
-                  {s.failbackCompletedAt && <p>Failback: {new Date(s.failbackCompletedAt).toLocaleString()}</p>}
-                  {s.consecutiveFailures > 0 && <p className="text-red-500">Failures: {s.consecutiveFailures}</p>}
-                  <p>Sync: {[s.syncFiles && 'Files', s.syncDatabases && 'DB', s.syncEmail && 'Email'].filter(Boolean).join(', ') || 'None'}</p>
-                </div>
-              </div>
-              <div className="flex flex-col gap-2">
-                {s.role === 'standby' && <>
-                  <button onClick={() => failover(s.serverId)} className="bg-orange-600 text-white rounded px-3 py-1 text-sm hover:bg-orange-700">Failover</button>
-                  <button onClick={() => promotePermanent(s.serverId)} className="bg-red-600 text-white rounded px-3 py-1 text-sm hover:bg-red-700">Make Permanent Primary</button>
-                </>}
-                {s.role === 'down' && <button onClick={() => failback(s.serverId)} className="bg-green-600 text-white rounded px-3 py-1 text-sm hover:bg-green-700">Failback</button>}
-                {s.role !== 'decommissioned' && <button onClick={() => { setConfigId(s.serverId); setCfg({ autoFailback: s.autoFailback, syncFiles: s.syncFiles, syncDatabases: s.syncDatabases, syncEmail: s.syncEmail, failoverStrategy: s.failoverStrategy ?? 0, floatingIp: '', cloudflareApiToken: '', cloudflareZoneId: '' }); }} className="bg-gray-200 text-gray-700 rounded px-3 py-1 text-sm hover:bg-gray-300">Configure</button>}
-              </div>
-            </div>
-          </div>
-        ))}
-        {states.length === 0 && <p className="text-gray-500">No HA servers configured. Add servers in Server Management, then configure sync here.</p>}
-      </div>
+    <>
+      <PageHead title="High availability" sub={`${states.length} server${states.length === 1 ? '' : 's'} in cluster`}
+        actions={
+          <>
+            <button className="btn" onClick={load}><Icons.refresh />Refresh</button>
+            <button
+              className="btn primary"
+              disabled={eligibleStandbys.length === 0}
+              title={eligibleStandbys.length === 0 ? 'Add a remote server first (Server fleet)' : 'Configure a new standby'}
+              onClick={() => {
+                setBootstrap(b => ({ ...b, standbyServerId: eligibleStandbys[0]?.id ?? 0 }));
+                setBootstrapErr(null);
+                setBootstrapOpen(true);
+              }}
+            >
+              <Icons.plus />Configure failover
+            </button>
+          </>
+        }
+      />
 
-      {configId && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setConfigId(null)}>
-          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold mb-4">HA Configuration</h3>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Failover Strategy</label>
-                <select value={cfg.failoverStrategy} onChange={e => setCfg({...cfg, failoverStrategy: Number(e.target.value)})} className="w-full border rounded px-3 py-2">
-                  <option value={0}>DNS Swap (free, TTL-dependent)</option>
-                  <option value={1}>Floating IP (instant, same LAN)</option>
-                  <option value={2}>Cloudflare (free or $5/mo LB)</option>
-                  <option value={3}>Per-Domain (selective)</option>
-                </select>
-              </div>
-              {cfg.failoverStrategy === 1 && <input placeholder="Floating IP" value={cfg.floatingIp} onChange={e => setCfg({...cfg, floatingIp: e.target.value})} className="w-full border rounded px-3 py-2" />}
-              {cfg.failoverStrategy === 2 && <>
-                <input placeholder="Cloudflare API Token" value={cfg.cloudflareApiToken} onChange={e => setCfg({...cfg, cloudflareApiToken: e.target.value})} className="w-full border rounded px-3 py-2" />
-                <input placeholder="Cloudflare Zone ID" value={cfg.cloudflareZoneId} onChange={e => setCfg({...cfg, cloudflareZoneId: e.target.value})} className="w-full border rounded px-3 py-2" />
-              </>}
-              <div className="flex gap-4">
-                <label className="flex items-center gap-1"><input type="checkbox" checked={cfg.syncFiles} onChange={e => setCfg({...cfg, syncFiles: e.target.checked})} /> Files</label>
-                <label className="flex items-center gap-1"><input type="checkbox" checked={cfg.syncDatabases} onChange={e => setCfg({...cfg, syncDatabases: e.target.checked})} /> Databases</label>
-                <label className="flex items-center gap-1"><input type="checkbox" checked={cfg.syncEmail} onChange={e => setCfg({...cfg, syncEmail: e.target.checked})} /> Email</label>
-              </div>
-              <label className="flex items-center gap-2"><input type="checkbox" checked={cfg.autoFailback} onChange={e => setCfg({...cfg, autoFailback: e.target.checked})} /> Auto-failback when recovered</label>
-              <div className="flex gap-2 mt-4">
-                <button onClick={saveConfig} className="flex-1 bg-blue-600 text-white rounded px-4 py-2 hover:bg-blue-700">Save</button>
-                <button onClick={() => setConfigId(null)} className="flex-1 bg-gray-200 text-gray-700 rounded px-4 py-2 hover:bg-gray-300">Cancel</button>
-              </div>
-            </div>
+      {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
+
+      {loading ? <Card><div className="muted" style={{ padding: 8 }}>Loading…</div></Card>
+        : states.length === 0 ? <Card><Empty icon="cloud" title="No HA servers configured" sub="Add servers in Server Management, then configure sync here." /></Card>
+        : (
+          <div className="col gap-3">
+            {states.map(s => (
+              <Card key={s.serverId} title={s.serverHostname} sub={s.serverIp}
+                actions={
+                  <div className="row gap-2">
+                    {s.role === 'standby' && (
+                      <>
+                        <button className="btn" onClick={() => failover(s.serverId)}><Icons.zap />Failover</button>
+                        <button className="btn danger" onClick={() => promotePermanent(s.serverId)}><Icons.shield />Make permanent</button>
+                      </>
+                    )}
+                    {s.role === 'down' && <button className="btn primary" onClick={() => failback(s.serverId)}><Icons.refresh />Failback</button>}
+                    {s.role !== 'decommissioned' && (
+                      <button className="btn" onClick={() => { setConfigId(s.serverId); setCfg({
+                        autoFailback: s.autoFailback, syncFiles: s.syncFiles, syncDatabases: s.syncDatabases, syncEmail: s.syncEmail,
+                        failoverStrategy: s.failoverStrategy ?? 0, floatingIp: '', cloudflareApiToken: '', cloudflareZoneId: '',
+                      }); }}><Icons.settings />Configure</button>
+                    )}
+                  </div>
+                }
+              >
+                <div className="row gap-2" style={{ marginBottom: 12, flexWrap: 'wrap' }}>
+                  <Badge tone={roleTone(s.role)} dot>{s.role}</Badge>
+                  <Badge tone={s.isHealthy ? 'success' : 'danger'} dot>{s.isHealthy ? 'Healthy' : 'Down'}</Badge>
+                  {s.failoverStrategy !== undefined && <Badge tone="info">{STRATEGY_NAMES[s.failoverStrategy]}</Badge>}
+                  {s.autoFailback && <Badge>Auto-failback</Badge>}
+                  {s.consecutiveFailures > 0 && <Badge tone="danger">{s.consecutiveFailures} failures</Badge>}
+                </div>
+                <div className="muted" style={{ fontSize: 12, fontFamily: 'var(--font-mono)', lineHeight: 1.8 }}>
+                  {s.lastSyncAt && <div>Last sync: {new Date(s.lastSyncAt).toLocaleString()}</div>}
+                  {s.lastHealthCheck && <div>Health check: {new Date(s.lastHealthCheck).toLocaleString()}</div>}
+                  {s.failoverTriggeredAt && <div>Failover triggered: {new Date(s.failoverTriggeredAt).toLocaleString()}</div>}
+                  {s.failbackCompletedAt && <div>Failback completed: {new Date(s.failbackCompletedAt).toLocaleString()}</div>}
+                  <div>Sync: {[s.syncFiles && 'Files', s.syncDatabases && 'Databases', s.syncEmail && 'Email'].filter(Boolean).join(', ') || 'None'}</div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+
+      <Dialog
+        open={bootstrapOpen}
+        onClose={() => setBootstrapOpen(false)}
+        title="Configure failover (one-time setup)"
+        sub="Registers a remote server as a failover standby and starts initial sync."
+        foot={
+          <>
+            {bootstrapErr && <span style={{ color: 'var(--danger)', fontSize: 12, marginRight: 'auto' }}>{bootstrapErr}</span>}
+            <button className="btn ghost" onClick={() => setBootstrapOpen(false)} disabled={bootstrapBusy}>Cancel</button>
+            <button className="btn primary" onClick={submitBootstrap} disabled={bootstrapBusy || !bootstrap.standbyServerId}>
+              {bootstrapBusy ? 'Configuring…' : 'Configure standby'}
+            </button>
+          </>
+        }
+      >
+        <div className="col gap-3">
+          <Field label="Standby server" hint="Only remote, active servers without an existing HA sync state appear here.">
+            <select className="select" value={bootstrap.standbyServerId} onChange={e => setBootstrap(b => ({ ...b, standbyServerId: Number(e.target.value) }))}>
+              <option value={0}>— pick one —</option>
+              {eligibleStandbys.map(s => <option key={s.id} value={s.id}>{s.hostname} ({s.ipAddress})</option>)}
+            </select>
+          </Field>
+          <Field label="Sync interval (minutes)" hint="How often the standby pulls deltas from the primary.">
+            <input className="input mono" type="number" min={1} max={1440} value={bootstrap.syncIntervalMinutes}
+              onChange={e => setBootstrap(b => ({ ...b, syncIntervalMinutes: Math.max(1, Number(e.target.value)) }))} />
+          </Field>
+          <div className="row gap-4" style={{ flexWrap: 'wrap' }}>
+            <Checkbox checked={bootstrap.syncDomains} onChange={v => setBootstrap(b => ({ ...b, syncDomains: v }))} label="Domains / vhost files" />
+            <Checkbox checked={bootstrap.syncDatabases} onChange={v => setBootstrap(b => ({ ...b, syncDatabases: v }))} label="Databases" />
+            <Checkbox checked={bootstrap.syncEmail} onChange={v => setBootstrap(b => ({ ...b, syncEmail: v }))} label="Mailboxes" />
           </div>
         </div>
-      )}
-    </div>
+      </Dialog>
+
+      <Dialog open={configId !== null} onClose={() => setConfigId(null)} title="HA configuration"
+        foot={<>
+          <button className="btn ghost" onClick={() => setConfigId(null)}>Cancel</button>
+          <button className="btn primary" onClick={saveConfig}>Save</button>
+        </>}>
+        <div className="col gap-3">
+          <Field label="Failover strategy">
+            <select className="select" value={cfg.failoverStrategy} onChange={e => setCfg(c => ({ ...c, failoverStrategy: Number(e.target.value) }))}>
+              <option value={0}>DNS Swap (free, TTL-dependent)</option>
+              <option value={1}>Floating IP (instant, same LAN)</option>
+              <option value={2}>Cloudflare (free or $5/mo LB)</option>
+              <option value={3}>Per-Domain (selective)</option>
+            </select>
+          </Field>
+          {cfg.failoverStrategy === 1 && (
+            <Field label="Floating IP"><input className="input mono" value={cfg.floatingIp} onChange={e => setCfg(c => ({ ...c, floatingIp: e.target.value }))} /></Field>
+          )}
+          {cfg.failoverStrategy === 2 && (
+            <>
+              <Field label="Cloudflare API token"><input className="input mono" type="password" value={cfg.cloudflareApiToken} onChange={e => setCfg(c => ({ ...c, cloudflareApiToken: e.target.value }))} /></Field>
+              <Field label="Cloudflare zone ID"><input className="input mono" value={cfg.cloudflareZoneId} onChange={e => setCfg(c => ({ ...c, cloudflareZoneId: e.target.value }))} /></Field>
+            </>
+          )}
+          <div className="row gap-4" style={{ flexWrap: 'wrap' }}>
+            <Checkbox checked={cfg.syncFiles} onChange={v => setCfg(c => ({ ...c, syncFiles: v }))} label="Files" />
+            <Checkbox checked={cfg.syncDatabases} onChange={v => setCfg(c => ({ ...c, syncDatabases: v }))} label="Databases" />
+            <Checkbox checked={cfg.syncEmail} onChange={v => setCfg(c => ({ ...c, syncEmail: v }))} label="Email" />
+          </div>
+          <Checkbox checked={cfg.autoFailback} onChange={v => setCfg(c => ({ ...c, autoFailback: v }))} label="Auto-failback when recovered" />
+        </div>
+      </Dialog>
+    </>
   );
 }

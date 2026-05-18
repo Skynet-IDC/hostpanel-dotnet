@@ -158,12 +158,27 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
             await RunStep("/bin/chown", ["-R", "root:root", $"{installDir}/agent"], "Agent ownership", log, ct);
 
             // Step 8: Restart services
+            // Restart API first (safe — doesn't affect the agent process).
+            // For the agent itself, spawn a detached shell that waits 3s then restarts —
+            // the agent can't await its own systemctl restart (SIGTERM kills the waiter).
+            // systemd's Restart=always will bring the new binary up automatically.
             _logger.LogInformation("[UPDATE] Step 6/7: Restarting services");
             log.Add("=== Step 7: Restart ===");
-            await RunStep("/usr/bin/systemctl", ["restart", "hostpanel-agent"], "Restart agent", log, ct);
-            await Task.Delay(2000, ct);
             await RunStep("/usr/bin/systemctl", ["restart", "hostpanel-api"], "Restart API", log, ct);
-            await Task.Delay(5000, ct);
+            await Task.Delay(3000, ct);
+            // Schedule self-restart detached (fire-and-forget)
+            using var p = new System.Diagnostics.Process();
+            p.StartInfo = new System.Diagnostics.ProcessStartInfo("/bin/bash",
+                "-c \"sleep 3 && systemctl restart hostpanel-agent\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false
+            };
+            p.Start();
+            log.Add("Agent self-restart scheduled");
+            await Task.Delay(1000, ct);
 
             // Step 9: Health check
             _logger.LogInformation("[UPDATE] Step 7/7: Health check");

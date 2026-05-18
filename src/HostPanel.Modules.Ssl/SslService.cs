@@ -30,7 +30,8 @@ public class SslService
         _useStaging = config.GetValue("Ssl:UseStaging", true);
     }
 
-    public async Task<SslCertificate> IssueCertificateAsync(int domainId, CancellationToken cancellationToken)
+    public async Task<SslCertificate> IssueCertificateAsync(int domainId, CancellationToken cancellationToken,
+        bool issueMailCert = true)
     {
         var domain = await _db.Domains
             .Include(d => d.SslCertificate)
@@ -186,7 +187,112 @@ public class SslService
         await _db.SaveChangesAsync(cancellationToken);
 
         _logger.LogInformation("SSL certificate issued for {Domain}, expires {Expiry}", domain.Name, sslCert.ExpiresAt);
+
+        // Optionally issue a separate cert for mail.{domain} and wire it into Postfix/Dovecot.
+        // Default: true — every domain gets a TLS cert for its mail subdomain so SMTP/IMAP
+        // clients see a valid cert instead of the self-signed snakeoil one.
+        if (issueMailCert && domain.IsMainDomain)
+        {
+            try
+            {
+                await IssueMailCertAsync(domain, acme, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // Non-fatal: web cert is already stored; log and continue.
+                _logger.LogWarning("mail.{Domain} cert issuance skipped: {Err}", domain.Name, ex.Message);
+            }
+        }
+
         return sslCert;
+    }
+
+    /// <summary>
+    /// Issues a Let's Encrypt cert for mail.{domain} via HTTP-01, then wires it into
+    /// Postfix (smtpd_tls_cert_file/key_file) and Dovecot (ssl_cert/ssl_key).
+    /// A temporary nginx server block serves the ACME challenge; it is removed afterwards.
+    /// </summary>
+    private async Task IssueMailCertAsync(Domain domain, AcmeContext acme, CancellationToken ct)
+    {
+        var mailFqdn = $"mail.{domain.Name}";
+        _logger.LogInformation("Issuing SSL certificate for {MailFqdn}", mailFqdn);
+
+        // Temp challenge dir under the main domain's web root — nginx already serves
+        // /.well-known/acme-challenge/ from there.  We need a vhost for mail.domain
+        // that also serves it; use a minimal server block pointing to the same docRoot.
+        var challengeDocRoot = Path.Combine("/var/www", $"mail_{domain.Name.Replace('.', '_')}_acme");
+        var challengeDir = Path.Combine(challengeDocRoot, ".well-known", "acme-challenge");
+        Directory.CreateDirectory(challengeDir);
+
+        // Temporary nginx vhost for mail.{domain} serving only the ACME challenge
+        var tempVhostPath = $"/etc/nginx/sites-enabled/mail.{domain.Name}.acme.conf";
+        var tempVhostContent = $$"""
+server {
+    listen 80;
+    server_name {{mailFqdn}};
+    root {{challengeDocRoot}};
+    location /.well-known/acme-challenge/ { try_files $uri =404; }
+    location / { return 404; }
+}
+""";
+        await File.WriteAllTextAsync(tempVhostPath, tempVhostContent, ct);
+        await System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+            "/usr/sbin/nginx", "-s reload") { UseShellExecute = false })!.WaitForExitAsync(ct);
+        await Task.Delay(500, ct);
+
+        try
+        {
+            var mailOrder = await acme.NewOrder(new[] { mailFqdn });
+            var mailAuthz = (await mailOrder.Authorizations()).First();
+            var mailChallenge = await mailAuthz.Http();
+            await File.WriteAllTextAsync(
+                Path.Combine(challengeDir, mailChallenge.Token), mailChallenge.KeyAuthz, ct);
+            await mailChallenge.Validate();
+
+            for (var i = 0; i < 20; i++)
+            {
+                await Task.Delay(3000, ct);
+                var status = await mailAuthz.Resource();
+                if (status.Status == Certes.Acme.Resource.AuthorizationStatus.Valid) break;
+                if (status.Status == Certes.Acme.Resource.AuthorizationStatus.Invalid)
+                {
+                    var errDetail = status.Challenges?.FirstOrDefault(c => c.Error != null)?.Error?.Detail ?? "unknown";
+                    throw new InvalidOperationException($"ACME validation failed for {mailFqdn}: {errDetail}");
+                }
+            }
+
+            var mailKey = KeyFactory.NewKey(Certes.KeyAlgorithm.RS256);
+            var mailCert = await mailOrder.Generate(new CsrInfo { CommonName = mailFqdn }, mailKey);
+
+            var mailCertDir = Path.Combine(_certBasePath, mailFqdn);
+            Directory.CreateDirectory(mailCertDir);
+            var mailCertPath = Path.Combine(mailCertDir, "fullchain.pem");
+            var mailKeyPath = Path.Combine(mailCertDir, "privkey.pem");
+            await File.WriteAllTextAsync(mailCertPath, mailCert.ToPem(), ct);
+            await File.WriteAllTextAsync(mailKeyPath, mailKey.ToPem(), ct);
+
+            // Wire cert into Postfix and Dovecot
+            await _agent.ExecuteAsync(new AgentRequest
+            {
+                Method = AgentMethods.MailConfigureSsl,
+                Params = new Dictionary<string, object?>
+                {
+                    ["certPath"] = mailCertPath,
+                    ["keyPath"] = mailKeyPath,
+                    ["domain"] = domain.Name
+                }
+            }, ct);
+
+            _logger.LogInformation("mail.{Domain} cert issued and wired into mail services", domain.Name);
+        }
+        finally
+        {
+            // Remove temp vhost and challenge dir
+            try { File.Delete(tempVhostPath); } catch { }
+            try { Directory.Delete(challengeDocRoot, recursive: true); } catch { }
+            await System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                "/usr/sbin/nginx", "-s reload") { UseShellExecute = false })!.WaitForExitAsync(ct);
+        }
     }
 
     /// <summary>

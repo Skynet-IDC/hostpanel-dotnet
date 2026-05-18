@@ -66,62 +66,45 @@ public class PostgreSqlProvisioner : IDbProvisioningService
         return [];
     }
 
+    // Run psql as the postgres OS user via sudo so peer auth works without a password.
+    // Requires: www-data ALL=(postgres) NOPASSWD: /usr/bin/psql,/usr/bin/createdb
+    // (written by installer to /etc/sudoers.d/hostpanel-pg)
     private async Task RunPsqlAsync(string sql, CancellationToken ct)
     {
-        using var process = new System.Diagnostics.Process
+        using var p = new System.Diagnostics.Process();
+        p.StartInfo = new System.Diagnostics.ProcessStartInfo("/usr/bin/sudo")
         {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "/usr/bin/psql",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            }
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
         };
-        process.StartInfo.ArgumentList.Add("-h");
-        process.StartInfo.ArgumentList.Add(_host);
-        process.StartInfo.ArgumentList.Add("-U");
-        process.StartInfo.ArgumentList.Add("postgres");
-        process.StartInfo.ArgumentList.Add("-c");
-        process.StartInfo.ArgumentList.Add(sql);
-
-        process.Start();
-        await process.WaitForExitAsync(ct);
-
-        if (process.ExitCode != 0)
-        {
-            var err = await process.StandardError.ReadToEndAsync(ct);
-            throw new InvalidOperationException($"PostgreSQL command failed: {err}");
-        }
+        p.StartInfo.ArgumentList.Add("-u"); p.StartInfo.ArgumentList.Add("postgres");
+        p.StartInfo.ArgumentList.Add("/usr/bin/psql");
+        p.StartInfo.ArgumentList.Add("-c"); p.StartInfo.ArgumentList.Add(sql);
+        p.Start();
+        await p.WaitForExitAsync(ct);
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"PostgreSQL command failed: {await p.StandardError.ReadToEndAsync(ct)}");
     }
 
     private async Task RunCreateDbAsync(string dbName, string owner, CancellationToken ct)
     {
-        using var process = new System.Diagnostics.Process
+        using var p = new System.Diagnostics.Process();
+        p.StartInfo = new System.Diagnostics.ProcessStartInfo("/usr/bin/sudo")
         {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "/usr/bin/createdb",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            }
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
         };
-        process.StartInfo.ArgumentList.Add("-h");
-        process.StartInfo.ArgumentList.Add(_host);
-        process.StartInfo.ArgumentList.Add("-U");
-        process.StartInfo.ArgumentList.Add("postgres");
-        process.StartInfo.ArgumentList.Add("-O");
-        process.StartInfo.ArgumentList.Add(owner);
-        process.StartInfo.ArgumentList.Add(dbName);
-
-        process.Start();
-        await process.WaitForExitAsync(ct);
-
-        if (process.ExitCode != 0)
+        p.StartInfo.ArgumentList.Add("-u"); p.StartInfo.ArgumentList.Add("postgres");
+        p.StartInfo.ArgumentList.Add("/usr/bin/createdb");
+        p.StartInfo.ArgumentList.Add("-O"); p.StartInfo.ArgumentList.Add(owner);
+        p.StartInfo.ArgumentList.Add(dbName);
+        p.Start();
+        await p.WaitForExitAsync(ct);
+        if (p.ExitCode != 0)
         {
-            var err = await process.StandardError.ReadToEndAsync(ct);
-            // Ignore "already exists" errors for idempotency
+            var err = await p.StandardError.ReadToEndAsync(ct);
             if (!err.Contains("already exists"))
                 throw new InvalidOperationException($"createdb failed: {err}");
         }

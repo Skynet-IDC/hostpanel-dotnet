@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using HostPanel.Core.DTOs;
 using HostPanel.Core.Enums;
+using HostPanel.Core.Interfaces;
 using HostPanel.Infrastructure.Data;
 using HostPanel.Modules.FileManager;
 
@@ -16,11 +17,13 @@ public class FilesController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly FileManagerService _fileManager;
+    private readonly IBillingMeter _meter;
 
-    public FilesController(AppDbContext db, FileManagerService fileManager)
+    public FilesController(AppDbContext db, FileManagerService fileManager, IBillingMeter meter)
     {
         _db = db;
         _fileManager = fileManager;
+        _meter = meter;
     }
 
     [HttpGet]
@@ -82,6 +85,27 @@ public class FilesController : ControllerBase
     {
         var basePath = await GetDomainBasePathAsync(domainId);
         if (basePath is null) return NotFound();
+
+        // Quota enforcement (#55): block uploads that would push disk usage past the plan limit.
+        var sub = await _db.Domains
+            .Where(d => d.Id == domainId)
+            .Select(d => new { d.SubscriptionId, d.Subscription!.ServicePlan!.DiskQuotaMb })
+            .FirstOrDefaultAsync();
+        if (sub is not null && sub.DiskQuotaMb > 0)
+        {
+            var currentBytes = await _meter.GetDiskUsageBytesAsync(sub.SubscriptionId);
+            var limitBytes = sub.DiskQuotaMb * 1024L * 1024L;
+            if (currentBytes + file.Length > limitBytes)
+            {
+                return StatusCode(StatusCodes.Status413PayloadTooLarge, new
+                {
+                    message = "Disk quota exceeded.",
+                    diskQuotaMb = sub.DiskQuotaMb,
+                    currentUsageMb = currentBytes / (1024.0 * 1024.0),
+                    fileSizeMb = file.Length / (1024.0 * 1024.0),
+                });
+            }
+        }
 
         var filePath = string.IsNullOrEmpty(path) || path == "/"
             ? file.FileName
@@ -174,6 +198,23 @@ public class FilesController : ControllerBase
             domain.Subscription.User.ParentUserId != userId)
             return null;
 
+        // Bug #45: main-domain rows can have a null/empty DocumentRoot if they were
+        // created via the subscription create flow (which set it on the Subscription,
+        // not the Domain row). Fall back to the canonical layout if so.
+        if (!string.IsNullOrEmpty(domain.DocumentRoot) && System.IO.Directory.Exists(domain.DocumentRoot))
+            return domain.DocumentRoot;
+
+        var username = domain.Subscription.SystemUsername;
+        if (!string.IsNullOrEmpty(username))
+        {
+            var canonical = $"/var/www/{username}/httpdocs";
+            if (System.IO.Directory.Exists(canonical)) return canonical;
+            var legacy = $"/var/www/{username}";
+            if (System.IO.Directory.Exists(legacy)) return legacy;
+        }
+
+        // Last resort — let the caller see the original (possibly broken) path so the
+        // 404 message is informative.
         return domain.DocumentRoot;
     }
 }

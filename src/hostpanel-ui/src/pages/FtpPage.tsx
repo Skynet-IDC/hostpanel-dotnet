@@ -1,66 +1,123 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import { Card, Dialog, Empty, Field, IconBtn, PageHead } from '../components/ui/primitives';
+import { Icons } from '../components/ui/Icons';
+import { panelApi, type PanelSubscription } from '../api/panel';
+
+interface FtpAccount {
+  id: number;
+  username: string;
+  homeDirectory?: string;
+  quotaMb?: number;
+}
 
 export function FtpPage() {
-  const [subs, setSubs] = useState<{ id: number; systemUsername: string }[]>([]);
+  const [subs, setSubs] = useState<PanelSubscription[]>([]);
   const [subId, setSubId] = useState<number | null>(null);
-  const [accounts, setAccounts] = useState<any[]>([]);
-  const [form, setForm] = useState({ username: '', password: '', directory: 'httpdocs', quotaMb: 500 });
+  const [accounts, setAccounts] = useState<FtpAccount[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => { api.get('/subscriptions').then(r => { setSubs(r.data); if (r.data.length > 0) setSubId(r.data[0].id); }); }, []);
-  useEffect(() => { if (subId) api.get(`/subscriptions/${subId}/ftp`).then(r => setAccounts(r.data)).catch(() => setAccounts([])); }, [subId]);
+  useEffect(() => {
+    panelApi.listSubscriptions()
+      .then(s => { setSubs(s); if (s.length > 0) setSubId(s[0].id); })
+      .catch(e => setErr(e instanceof Error ? e.message : 'Load failed'))
+      .finally(() => setLoading(false));
+  }, []);
 
-  const create = async () => {
+  const load = async () => {
     if (!subId) return;
-    await api.post(`/subscriptions/${subId}/ftp`, form);
-    api.get(`/subscriptions/${subId}/ftp`).then(r => setAccounts(r.data));
-    setForm({ username: '', password: '', directory: 'httpdocs', quotaMb: 500 });
+    try {
+      const { data } = await api.get<FtpAccount[]>(`/subscriptions/${subId}/ftp`);
+      setAccounts(data);
+    } catch { setAccounts([]); }
   };
 
+  useEffect(() => { void load(); }, [subId]);
+
   const remove = async (id: number) => {
-    if (!confirm('Delete this FTP account?')) return;
+    if (!subId || !confirm('Delete this FTP account?')) return;
     await api.delete(`/subscriptions/${subId}/ftp/${id}`);
-    setAccounts(accounts.filter(a => a.id !== id));
+    void load();
   };
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">FTP Accounts</h2>
-        <select value={subId ?? ''} onChange={e => setSubId(Number(e.target.value))} className="border rounded px-3 py-2">
-          {subs.map(s => <option key={s.id} value={s.id}>{s.systemUsername || `Sub #${s.id}`}</option>)}
-        </select>
+    <>
+      <PageHead
+        title="FTP accounts"
+        sub="Tenant-scoped FTP via vsftpd"
+        actions={
+          <>
+            {subs.length > 0 && (
+              <select className="select" value={subId ?? ''} onChange={e => setSubId(Number(e.target.value))} style={{ maxWidth: 220 }}>
+                {subs.map(s => <option key={s.id} value={s.id}>{s.systemUsername || s.domains?.[0]?.name || `Sub #${s.id}`}</option>)}
+              </select>
+            )}
+            <button className="btn primary" onClick={() => setCreateOpen(true)} disabled={!subId}><Icons.plus />New FTP account</button>
+          </>
+        }
+      />
+      {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
+      <Card flush>
+        {loading ? <div className="muted" style={{ padding: 16 }}>Loading…</div>
+          : accounts.length === 0 ? <Empty icon="user" title="No FTP accounts" sub="Create a credential for upload-only access." />
+          : (
+            <table className="tbl">
+              <thead><tr><th>Username</th><th>Home directory</th><th>Quota</th><th style={{ textAlign: 'right' }} /></tr></thead>
+              <tbody>
+                {accounts.map(a => (
+                  <tr key={a.id}>
+                    <td className="mono">{a.username}</td>
+                    <td className="mono muted" style={{ fontSize: 11.5 }}>{a.homeDirectory ?? '—'}</td>
+                    <td className="mono">{a.quotaMb != null ? `${a.quotaMb} MB` : '∞'}</td>
+                    <td><div className="row-actions"><IconBtn icon="trash" danger title="Delete" onClick={() => remove(a.id)} /></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </Card>
+      <CreateDialog open={createOpen} onClose={() => setCreateOpen(false)} subId={subId} onSaved={() => { setCreateOpen(false); void load(); }} />
+    </>
+  );
+}
+
+function CreateDialog({ open, onClose, subId, onSaved }: { open: boolean; onClose: () => void; subId: number | null; onSaved: () => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [directory, setDirectory] = useState('httpdocs');
+  const [quotaMb, setQuotaMb] = useState(500);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => { if (open) { setUsername(''); setPassword(''); setDirectory('httpdocs'); setQuotaMb(500); setErr(null); } }, [open]);
+
+  const submit = async () => {
+    if (!subId) return;
+    setBusy(true); setErr(null);
+    try {
+      await api.post(`/subscriptions/${subId}/ftp`, { username, password, directory, quotaMb });
+      onSaved();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      setErr(msg ?? 'Create failed');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} title="New FTP account"
+      foot={<>
+        {err && <span style={{ color: 'var(--danger)', fontSize: 12, marginRight: 'auto' }}>{err}</span>}
+        <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="btn primary" onClick={submit} disabled={busy || !username || !password}>{busy ? 'Creating…' : 'Create'}</button>
+      </>}>
+      <div className="grid-2" style={{ gap: 12 }}>
+        <Field label="Username"><input className="input mono" value={username} onChange={e => setUsername(e.target.value)} autoFocus /></Field>
+        <Field label="Password"><input className="input mono" type="password" value={password} onChange={e => setPassword(e.target.value)} /></Field>
+        <Field label="Home directory"><input className="input mono" value={directory} onChange={e => setDirectory(e.target.value)} /></Field>
+        <Field label="Quota (MB)"><input className="input mono" type="number" min={0} value={quotaMb} onChange={e => setQuotaMb(Number(e.target.value))} /></Field>
       </div>
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <h3 className="text-lg font-semibold mb-3">Create FTP Account</h3>
-        <div className="grid grid-cols-5 gap-3">
-          <input placeholder="Username" value={form.username} onChange={e => setForm({...form, username: e.target.value})} className="border rounded px-3 py-2" />
-          <input placeholder="Password" type="password" value={form.password} onChange={e => setForm({...form, password: e.target.value})} className="border rounded px-3 py-2" />
-          <input placeholder="Directory" value={form.directory} onChange={e => setForm({...form, directory: e.target.value})} className="border rounded px-3 py-2" />
-          <input placeholder="Quota MB" type="number" value={form.quotaMb} onChange={e => setForm({...form, quotaMb: Number(e.target.value)})} className="border rounded px-3 py-2" />
-          <button onClick={create} className="bg-blue-600 text-white rounded px-4 py-2 hover:bg-blue-700">Create</button>
-        </div>
-      </div>
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50"><tr>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Username</th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Home Dir</th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Quota</th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-          </tr></thead>
-          <tbody className="divide-y divide-gray-200">
-            {accounts.map(a => (
-              <tr key={a.id}>
-                <td className="px-6 py-3 font-mono text-sm">{a.username}</td>
-                <td className="px-6 py-3 font-mono text-sm">{a.homeDirectory}</td>
-                <td className="px-6 py-3">{a.quotaMb} MB</td>
-                <td className="px-6 py-3"><button onClick={() => remove(a.id)} className="text-red-600 hover:text-red-800 text-sm">Delete</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    </Dialog>
   );
 }

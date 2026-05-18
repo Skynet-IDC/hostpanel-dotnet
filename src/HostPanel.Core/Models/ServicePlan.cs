@@ -22,5 +22,16 @@ public class ServicePlan : BaseEntity
     public string ReminderSchedule { get; set; } = "1,3,5";
     public int DeletionAfterDays { get; set; } = 30;
 
+    /// <summary>
+    /// True for one-off plans attached to a single customer (e.g. a bespoke quote).
+    /// Hidden from the public catalog (`/plans` endpoint filters them out).
+    /// When true, CustomerUserId is the owning user; deleting that user cascades the plan.
+    /// </summary>
+    public bool IsCustom { get; set; }
+
+    /// <summary>Owner of an IsCustom plan. Null for standard catalog plans.</summary>
+    public string? CustomerUserId { get; set; }
+    public AppUser? CustomerUser { get; set; }
+
     public ICollection<Subscription> Subscriptions { get; set; } = [];
 }

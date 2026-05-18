@@ -63,7 +63,10 @@ public class BackupService : IBackupService
             backup.IsCompleted = true;
             // Get file size
             if (result.Result?.Data?.TryGetValue("sizeBytes", out var size) == true)
-                backup.SizeBytes = Convert.ToInt64(size);
+            {
+                if (size is System.Text.Json.JsonElement je) backup.SizeBytes = je.TryGetInt64(out var n) ? n : 0;
+                else backup.SizeBytes = Convert.ToInt64(size);
+            }
         }
 
         await _db.SaveChangesAsync(ct);

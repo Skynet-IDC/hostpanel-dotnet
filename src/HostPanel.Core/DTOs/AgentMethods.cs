@@ -7,6 +7,7 @@ public static class AgentMethods
     public const string SystemDeleteUser = "system.deleteUser";
     public const string SystemSetQuota = "system.setQuota";
     public const string SystemGetStats = "system.getStats";
+    public const string SystemGetBandwidth = "system.getBandwidth";
 
     // Nginx
     public const string NginxCreateVhost = "nginx.createVhost";
@@ -28,6 +29,8 @@ public static class AgentMethods
     public const string MailDeleteMailbox = "mail.deleteMailbox";
     public const string MailCreateAlias = "mail.createAlias";
     public const string MailDeleteAlias = "mail.deleteAlias";
+    public const string MailProvision = "mail.provision";
+    public const string MailConfigureSsl = "mail.configureSsl";
 
     // SSL
     public const string SslIssueCertificate = "ssl.issueCertificate";
@@ -119,13 +122,21 @@ public static class AgentMethods
     public const string AppRestart = "app.restart";
     public const string AppWriteEnv = "app.writeEnv";
 
+    // Migration (Plesk → HostPanel)
+    public const string MigrationRsyncFromPlesk = "migration.rsyncFromPlesk";
+    public const string MigrationMysqldumpRemote = "migration.mysqldumpRemote";
+    public const string MigrationImapsync = "migration.imapsync";
+    public const string MigrationDetectWordPress = "migration.detectWordPress";
+    public const string MigrationVerifyCutover = "migration.verifyCutover";
+    public const string MigrationPatchWpConfig = "migration.patchWpConfig";
+
     // NOTE: DNS and Mail methods are handled at the API level via provider APIs
     // (PowerDNS REST API, Cloudflare API, Postfix/Dovecot config files),
     // not through the Agent RPC. Constants kept for documentation only.
 
     public static readonly HashSet<string> AllMethods =
     [
-        SystemCreateUser, SystemDeleteUser, SystemSetQuota, SystemGetStats,
+        SystemCreateUser, SystemDeleteUser, SystemSetQuota, SystemGetStats, SystemGetBandwidth,
         NginxCreateVhost, NginxDeleteVhost, NginxReload,
         PhpCreatePool, PhpDeletePool,
         SslIssueCertificate, SslRenewCertificate, SslRevokeCertificate,
@@ -144,6 +155,10 @@ public static class AgentMethods
         DomainSetHotlinkProtection, DomainSetIpDeny, DomainPasswordProtect,
         HaConfigureStandby, HaPromoteToPrimary, HaSyncFrom, HaSyncDatabases, HaSyncEmail, HaStopSync, HaDemoteToStandby, HaAddFloatingIp, HaRemoveFloatingIp, HaSendGratuitousArp,
         PanelUpdate, PanelRollback,
-        AppConfigure, AppBuild, AppRestart, AppWriteEnv
+        AppConfigure, AppBuild, AppRestart, AppWriteEnv,
+        MailProvision,
+        MailConfigureSsl,
+        MigrationRsyncFromPlesk, MigrationMysqldumpRemote, MigrationImapsync,
+        MigrationDetectWordPress, MigrationVerifyCutover, MigrationPatchWpConfig
     ];
 }

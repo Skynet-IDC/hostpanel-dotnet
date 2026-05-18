@@ -127,6 +127,28 @@ public class WebhooksController : ControllerBase
     }
 
     /// <summary>
+    /// Get delivery summary for a webhook endpoint (last triggered, failure count, last failure).
+    /// Per-delivery history would need a WebhookDelivery table — this is the endpoint-level summary.
+    /// </summary>
+    [HttpGet("{id}/deliveries")]
+    public async Task<IActionResult> Deliveries(int id)
+    {
+        var endpoint = await _db.Set<WebhookEndpoint>().FindAsync(id);
+        if (endpoint is null) return NotFound();
+        return Ok(new
+        {
+            endpointId = endpoint.Id,
+            url = endpoint.Url,
+            events = endpoint.Events,
+            isActive = endpoint.IsActive,
+            lastTriggeredAt = endpoint.LastTriggeredAt,
+            lastFailureAt = endpoint.LastFailureAt,
+            failureCount = endpoint.FailureCount,
+            disabled = endpoint.FailureCount >= 10
+        });
+    }
+
+    /// <summary>
     /// List all available webhook event types.
     /// </summary>
     [HttpGet("events")]

@@ -37,7 +37,9 @@ builder.Host.UseSerilog();
 
 // EF Core + SQL Server
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options
+        .UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"))
+        .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)));
 
 // ASP.NET Identity
 builder.Services.AddIdentity<AppUser, IdentityRole>(options =>
@@ -150,6 +152,9 @@ builder.Services.AddHostedService<BillingCycleService>();
 builder.Services.AddHostedService<SslRenewalBackgroundService>();
 builder.Services.AddScoped<IBackupService, BackupService>();
 builder.Services.AddScoped<PleskMigrationService>();
+builder.Services.AddHttpClient("plesk-migration").ConfigurePrimaryHttpMessageHandler(() =>
+    new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, _, _, _) => true });
+builder.Services.AddHttpClient("cloudflare");
 builder.Services.AddScoped<WebmailService>();
 builder.Services.AddScoped<UsageTrackingService>();
 builder.Services.AddScoped<IBillingMeter, UsageTrackingService>();
@@ -166,7 +171,9 @@ builder.Services.AddScoped<HaService>();
 builder.Services.AddHostedService<HaHealthMonitorService>();
 
 // Controllers + SignalR
-builder.Services.AddControllers();
+builder.Services.AddScoped<HostPanel.Api.Middleware.AuditLogFilter>();
+builder.Services.AddControllers(o => o.Filters.Add<HostPanel.Api.Middleware.AuditLogFilter>())
+    .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddSignalR();
 
 // OpenTelemetry
@@ -216,24 +223,28 @@ using (var scope = app.Services.CreateScope())
             await roleManager.CreateAsync(new IdentityRole(role));
     }
 
-    // Seed admin user if none exists
+    // Seed admin user only when explicit Admin:Email + Admin:Password are configured.
+    // Fresh installs intentionally leave the system admin-less so the first visitor
+    // creates the admin via /api/v1/setup/bootstrap-admin (BootstrapController).
+    // Backward compat: existing installs that set those config values still get seeded.
     var userManager = scope.ServiceProvider.GetRequiredService<UserManager<AppUser>>();
-    if (!userManager.Users.Any(u => u.Role == UserRole.Admin))
+    var configuredEmail = builder.Configuration["Admin:Email"];
+    var configuredPassword = builder.Configuration["Admin:Password"];
+    if (!string.IsNullOrWhiteSpace(configuredEmail) &&
+        !string.IsNullOrWhiteSpace(configuredPassword) &&
+        !userManager.Users.Any(u => u.Role == UserRole.Admin))
     {
-        var adminEmail = builder.Configuration["Admin:Email"] ?? "admin@hostpanel.local";
-        var adminPassword = builder.Configuration["Admin:Password"] ?? "REDACTED-PASSWORD";
-
         var admin = new AppUser
         {
-            UserName = adminEmail,
-            Email = adminEmail,
+            UserName = configuredEmail,
+            Email = configuredEmail,
             FirstName = "System",
             LastName = "Admin",
             Role = UserRole.Admin,
             EmailConfirmed = true
         };
 
-        var result = await userManager.CreateAsync(admin, adminPassword);
+        var result = await userManager.CreateAsync(admin, configuredPassword);
         if (result.Succeeded)
             await userManager.AddToRoleAsync(admin, UserRole.Admin.ToString());
     }
@@ -244,9 +255,27 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// Honor X-Forwarded-* headers from nginx so OIDC redirect_uri uses the public scheme + host
+// (otherwise .NET sees `http://localhost` from the local nginx proxy and Authentik 400s).
+// ForwardedHeadersOptions lives in Microsoft.AspNetCore.Builder; constants in HttpOverrides.
+{
+    var fwd = new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
+    {
+        ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
+                           | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
+                           | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedHost,
+    };
+    fwd.KnownProxies.Add(System.Net.IPAddress.Loopback);
+    fwd.KnownNetworks.Clear(); // trust any upstream — nginx is the only proxy on this box
+    fwd.KnownProxies.Clear();
+    app.UseForwardedHeaders(fwd);
+}
+
 app.UseCors("AllowFrontend");
 if (!app.Environment.IsEnvironment("Testing"))
     app.UseMiddleware<HostPanel.Api.Middleware.RateLimitingMiddleware>();
+// WebSockets — needed for ClaudeController's /api/v1/claude/terminal/{subId} PTY bridge.
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

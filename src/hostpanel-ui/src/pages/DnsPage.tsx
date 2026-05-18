@@ -1,220 +1,139 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import { Card, Dialog, Empty, Field, IconBtn, PageHead } from '../components/ui/primitives';
+import { Icons } from '../components/ui/Icons';
 
-interface DnsRecord {
-  id: number;
-  type: string;
-  name: string;
-  value: string;
-  ttl: number;
-  priority: number | null;
-}
+interface DnsRecord { id: number; type: string; name: string; value: string; ttl: number; priority: number | null }
 
-const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV'];
+const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV'] as const;
 
 export function DnsPage() {
   const [domains, setDomains] = useState<{ id: number; name: string }[]>([]);
   const [domainId, setDomainId] = useState<number | null>(null);
   const [records, setRecords] = useState<DnsRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  // Form state
-  const [formType, setFormType] = useState('A');
-  const [formName, setFormName] = useState('');
-  const [formValue, setFormValue] = useState('');
-  const [formTtl, setFormTtl] = useState(3600);
-  const [formPriority, setFormPriority] = useState(10);
-  const [creating, setCreating] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
-    api.get('/domains').then((res) => {
-      setDomains(res.data);
-      if (res.data.length > 0) setDomainId(res.data[0].id);
-    }).finally(() => setLoading(false));
+    api.get<{ id: number; name: string }[]>('/domains')
+      .then(r => { setDomains(r.data); if (r.data.length > 0) setDomainId(r.data[0].id); })
+      .finally(() => setLoading(false));
   }, []);
 
-  const loadRecords = () => {
+  const load = async () => {
     if (!domainId) return;
-    setLoading(true);
-    setError('');
-    api.get(`/domains/${domainId}/dns`)
-      .then((res) => setRecords(res.data))
-      .catch((err) => setError(err.response?.data?.message || 'Failed to load DNS records'))
-      .finally(() => setLoading(false));
+    setErr(null);
+    try {
+      const { data } = await api.get<DnsRecord[]>(`/domains/${domainId}/dns`);
+      setRecords(data);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to load');
+    }
   };
 
-  useEffect(() => { loadRecords(); }, [domainId]);
+  useEffect(() => { void load(); }, [domainId]);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const remove = async (id: number, name: string) => {
+    if (!confirm(`Delete DNS record ${name}?`)) return;
+    await api.delete(`/dns/${id}`);
+    void load();
+  };
+
+  const selected = domains.find(d => d.id === domainId);
+
+  return (
+    <>
+      <PageHead
+        title="DNS records"
+        sub={selected ? `Panel-managed PowerDNS zone for ${selected.name}` : 'Pick a domain'}
+        actions={
+          <>
+            {domains.length > 0 && (
+              <select className="select" value={domainId ?? ''} onChange={e => setDomainId(Number(e.target.value))} style={{ maxWidth: 240 }}>
+                {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            )}
+            <button className="btn primary" onClick={() => setCreateOpen(true)} disabled={!domainId}><Icons.plus />Add record</button>
+          </>
+        }
+      />
+
+      {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
+
+      <Card flush>
+        {loading ? <div className="muted" style={{ padding: 16 }}>Loading…</div>
+          : records.length === 0 ? <Empty icon="dns" title="No DNS records" sub="Add an A, CNAME, MX, TXT, or SRV record." />
+          : (
+            <table className="tbl">
+              <thead><tr><th>Type</th><th>Name</th><th>Value</th><th>TTL</th><th>Priority</th><th style={{ textAlign: 'right' }} /></tr></thead>
+              <tbody>
+                {records.map(r => (
+                  <tr key={r.id}>
+                    <td><span className="tag">{r.type}</span></td>
+                    <td className="mono">{r.name}</td>
+                    <td className="mono muted" style={{ fontSize: 11.5, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.value}</td>
+                    <td className="mono">{r.ttl}</td>
+                    <td className="mono">{r.priority ?? '—'}</td>
+                    <td><div className="row-actions"><IconBtn icon="trash" danger title="Delete" onClick={() => remove(r.id, r.name)} /></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </Card>
+
+      <CreateDialog open={createOpen} onClose={() => setCreateOpen(false)} domainId={domainId} onSaved={() => { setCreateOpen(false); void load(); }} />
+    </>
+  );
+}
+
+function CreateDialog({ open, onClose, domainId, onSaved }: { open: boolean; onClose: () => void; domainId: number | null; onSaved: () => void }) {
+  const [type, setType] = useState<typeof DNS_TYPES[number]>('A');
+  const [name, setName] = useState('@');
+  const [value, setValue] = useState('');
+  const [ttl, setTtl] = useState(3600);
+  const [priority, setPriority] = useState(10);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => { if (open) { setType('A'); setName('@'); setValue(''); setTtl(3600); setPriority(10); setErr(null); } }, [open]);
+
+  const submit = async () => {
     if (!domainId) return;
-    setCreating(true);
+    setBusy(true); setErr(null);
     try {
       await api.post(`/domains/${domainId}/dns`, {
-        type: formType,
-        name: formName,
-        value: formValue,
-        ttl: formTtl,
-        priority: (formType === 'MX' || formType === 'SRV') ? formPriority : null,
+        type, name, value, ttl,
+        priority: (type === 'MX' || type === 'SRV') ? priority : null,
       });
-      setFormName('');
-      setFormValue('');
-      setFormTtl(3600);
-      setFormPriority(10);
-      loadRecords();
-    } catch (err: any) {
-      alert(err.response?.data?.message || 'Failed to create DNS record');
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleDelete = async (id: number, name: string) => {
-    if (!confirm(`Delete DNS record ${name}?`)) return;
-    try {
-      await api.delete(`/dns/${id}`);
-      loadRecords();
-    } catch (err: any) {
-      alert(err.response?.data?.message || 'Failed to delete record');
-    }
+      onSaved();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      setErr(msg ?? 'Add failed');
+    } finally { setBusy(false); }
   };
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">DNS Management</h2>
-        <select
-          value={domainId ?? ''}
-          onChange={(e) => setDomainId(Number(e.target.value))}
-          className="border border-gray-300 rounded px-3 py-2"
-        >
-          {domains.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
-      </div>
-
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded">{error}</div>
-      )}
-
-      {/* Add Record Form */}
-      <div className="bg-white rounded-lg shadow p-6 mb-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Add DNS Record</h3>
-        <form onSubmit={handleCreate} className="flex items-end gap-4 flex-wrap">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-            <select
-              value={formType}
-              onChange={(e) => setFormType(e.target.value)}
-              className="border border-gray-300 rounded px-3 py-2"
-            >
-              {DNS_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-            <input
-              type="text"
-              value={formName}
-              onChange={(e) => setFormName(e.target.value)}
-              placeholder="@"
-              required
-              className="border border-gray-300 rounded px-3 py-2 w-40"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Value</label>
-            <input
-              type="text"
-              value={formValue}
-              onChange={(e) => setFormValue(e.target.value)}
-              placeholder="192.168.1.1"
-              required
-              className="border border-gray-300 rounded px-3 py-2 w-56"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">TTL</label>
-            <input
-              type="number"
-              value={formTtl}
-              onChange={(e) => setFormTtl(Number(e.target.value))}
-              min={60}
-              className="border border-gray-300 rounded px-3 py-2 w-24"
-            />
-          </div>
-          {(formType === 'MX' || formType === 'SRV') && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
-              <input
-                type="number"
-                value={formPriority}
-                onChange={(e) => setFormPriority(Number(e.target.value))}
-                min={0}
-                className="border border-gray-300 rounded px-3 py-2 w-20"
-              />
-            </div>
-          )}
-          <button
-            type="submit"
-            disabled={creating}
-            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-          >
-            {creating ? 'Adding...' : 'Add Record'}
-          </button>
-        </form>
-      </div>
-
-      {/* Records Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        {loading ? (
-          <div className="p-8 text-center text-gray-500">Loading...</div>
-        ) : (
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Value</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">TTL</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Priority</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {records.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-gray-500">No DNS records.</td>
-                </tr>
-              ) : (
-                records.map((r) => (
-                  <tr key={r.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4">
-                      <span className="text-xs font-mono bg-gray-100 text-gray-700 px-2 py-0.5 rounded">{r.type}</span>
-                    </td>
-                    <td className="px-6 py-4 font-medium text-gray-900 font-mono text-sm">{r.name}</td>
-                    <td className="px-6 py-4 text-sm text-gray-500 font-mono max-w-xs truncate">{r.value}</td>
-                    <td className="px-6 py-4 text-sm text-gray-500">{r.ttl}</td>
-                    <td className="px-6 py-4 text-sm text-gray-500">{r.priority ?? '-'}</td>
-                    <td className="px-6 py-4">
-                      <button
-                        onClick={() => handleDelete(r.id, r.name)}
-                        className="text-red-600 hover:text-red-800 text-sm"
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+    <Dialog open={open} onClose={onClose} title="Add DNS record"
+      foot={<>
+        {err && <span style={{ color: 'var(--danger)', fontSize: 12, marginRight: 'auto' }}>{err}</span>}
+        <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="btn primary" onClick={submit} disabled={busy || !value}>{busy ? 'Adding…' : 'Add record'}</button>
+      </>}>
+      <div className="grid-2" style={{ gap: 12 }}>
+        <Field label="Type">
+          <select className="select" value={type} onChange={e => setType(e.target.value as typeof DNS_TYPES[number])}>
+            {DNS_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </Field>
+        <Field label="Name"><input className="input mono" value={name} onChange={e => setName(e.target.value)} placeholder="@" /></Field>
+        <Field label="Value" span={2}><input className="input mono" value={value} onChange={e => setValue(e.target.value)} placeholder={type === 'A' ? '192.0.2.1' : 'see RFC'} autoFocus /></Field>
+        <Field label="TTL (seconds)"><input className="input mono" type="number" min={60} value={ttl} onChange={e => setTtl(Number(e.target.value))} /></Field>
+        {(type === 'MX' || type === 'SRV') && (
+          <Field label="Priority"><input className="input mono" type="number" min={0} value={priority} onChange={e => setPriority(Number(e.target.value))} /></Field>
         )}
       </div>
-    </div>
+    </Dialog>
   );
 }

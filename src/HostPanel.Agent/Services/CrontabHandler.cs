@@ -10,7 +10,11 @@ public class CrontabHandler : IAgentMethodHandler
     public async Task<AgentResult> HandleAsync(Dictionary<string, object?> parameters, CancellationToken ct)
     {
         var username = parameters.TryGetValue("username", out var u) ? u?.ToString() : null;
-        var content = parameters.TryGetValue("content", out var c) ? c?.ToString() ?? (c is JsonElement je ? je.GetString() : "") : "";
+        string? content = null;
+        if (parameters.TryGetValue("content", out var c))
+            content = c is JsonElement je
+                ? (je.ValueKind == JsonValueKind.String ? je.GetString() : je.ToString())
+                : c?.ToString();
 
         if (string.IsNullOrEmpty(username))
             return new AgentResult { Success = false, Data = new() { ["error"] = "username required" } };

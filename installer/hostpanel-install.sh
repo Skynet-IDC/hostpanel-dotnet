@@ -26,8 +26,11 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Parse arguments
 SQL_PASSWORD=""
-ADMIN_EMAIL="admin@hostpanel.local"
-ADMIN_PASSWORD="REDACTED-PASSWORD"
+# Admin email/password are no longer baked in by default. If omitted, the panel boots
+# admin-less and the first visitor to https://<host>:8443/ is shown a one-shot
+# "create admin account" screen powered by /api/v1/setup/bootstrap-admin.
+ADMIN_EMAIL=""
+ADMIN_PASSWORD=""
 SKIP_MSSQL=false
 SKIP_MAIL=false
 WITH_SDK=false
@@ -87,6 +90,10 @@ install_base() {
     # Wait up to 5 minutes for dpkg lock (unattended-upgrades runs on first boot)
     echo 'DPkg::Lock::Timeout "300";' > /etc/apt/apt.conf.d/99-hostpanel-lock-wait
 
+    # Force IPv4 for apt — some Proxmox/cloud-init setups deliver an IPv6 default route via RA
+    # but no actual IPv6 connectivity, causing apt to hang on AAAA-first lookups (seen on VM 281 HA standby).
+    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99-hostpanel-force-ipv4
+
     log_info "Updating package lists..."
     apt-get update -qq
 
@@ -97,6 +104,21 @@ install_base() {
         ufw fail2ban unzip tar gzip \
         quota quotatool rsync jq \
         apache2-utils vnstat clamav clamav-daemon
+
+    # wkhtmltopdf — needed for InvoicePdfController to render real PDFs (bug #52).
+    # Removed from Ubuntu 24.04 repos; pull the upstream .deb from the wkhtmltopdf GitHub release
+    # (built for jammy, runs fine on noble). Falls back gracefully if download fails — the API
+    # detects the missing binary and serves HTML invoices instead.
+    if ! command -v wkhtmltopdf >/dev/null 2>&1; then
+        log_info "Installing wkhtmltopdf (for invoice PDFs)..."
+        local wkh_deb="/tmp/wkhtmltox.deb"
+        if wget -q -O "$wkh_deb" "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.jammy_amd64.deb"; then
+            apt-get install -y -qq "$wkh_deb" 2>&1 | tail -2 || log_warn "wkhtmltopdf install failed — invoice PDFs will fall back to HTML"
+            rm -f "$wkh_deb"
+        else
+            log_warn "wkhtmltopdf .deb download failed — invoice PDFs will fall back to HTML"
+        fi
+    fi
 }
 
 # Install .NET Runtime (and optionally SDK for on-server builds)
@@ -161,7 +183,7 @@ install_mssql() {
 
     # Pin to 22.04 repo — Microsoft doesn't publish mssql-server-2022 for 24.04+
     local MSSQL_REPO_VERSION="22.04"
-    curl -s https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/microsoft.gpg
+    curl -s https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --no-tty --yes --dearmor -o /usr/share/keyrings/microsoft.gpg
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/ubuntu/${MSSQL_REPO_VERSION}/mssql-server-2022 jammy main" > /etc/apt/sources.list.d/mssql-server.list
     apt-get update -qq
 
@@ -247,10 +269,13 @@ install_mail() {
 
     apt-get install -y -qq postfix dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd
 
+    # imapsync — used by the Plesk migration importer (Phase 20). Idempotent if already installed.
+    apt-get install -y -qq imapsync || log_warn "imapsync installation failed - install manually if Plesk migration is needed"
+
     # Rspamd
     apt-get install -y -qq lsb-release wget
     CODENAME=$(lsb_release -cs)
-    wget -qO- https://rspamd.com/apt-stable/gpg.key | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/rspamd.gpg
+    wget -qO- https://rspamd.com/apt-stable/gpg.key | gpg --batch --no-tty --yes --dearmor -o /usr/share/keyrings/rspamd.gpg
     echo "deb [signed-by=/usr/share/keyrings/rspamd.gpg] http://rspamd.com/apt-stable/ $CODENAME main" > /etc/apt/sources.list.d/rspamd.list
     apt-get update -qq
     apt-get install -y -qq rspamd redis-server || log_warn "Rspamd installation failed - can be installed manually later"
@@ -507,6 +532,14 @@ deploy_hostpanel() {
     "CertPath": "${SSL_DIR}",
     "AccountEmail": "${ADMIN_EMAIL}",
     "UseStaging": false
+  },
+  "Databases": {
+    "MsSql": {
+      "ConnectionString": "Server=localhost;Database=master;User Id=sa;Password=${SQL_PASSWORD};TrustServerCertificate=True;"
+    },
+    "PostgreSql": {
+      "Host": "localhost"
+    }
   }
 }
 SETTINGS
@@ -573,7 +606,10 @@ server {
     # API
     location /api/ {
         proxy_pass http://127.0.0.1:5000;
-        proxy_set_header Host $host;
+        # Use $http_host (includes :port) + X-Forwarded-Host so .NET ForwardedHeaders
+        # middleware can rebuild the public URL — required for OIDC redirect_uri (Phase 21).
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -588,6 +624,16 @@ server {
 NGINX
 
     ln -sf /etc/nginx/sites-available/hostpanel.conf /etc/nginx/sites-enabled/
+
+    # Custom nginx log_format with $host appended so the bandwidth tracker
+    # (system.getBandwidth agent method) can attribute bytes to a subscription.
+    # Default ‘combined’ format omits the Host header, breaking per-customer billing.
+    cat >/etc/nginx/conf.d/hostpanel-log-format.conf <<'NGINXLOG'
+log_format hostpanel_combined '$remote_addr - $remote_user [$time_local] '
+                              '"$request" $status $bytes_sent '
+                              '"$http_referer" "$http_user_agent" host=$host';
+access_log /var/log/nginx/access.log hostpanel_combined;
+NGINXLOG
 
     # Generate self-signed certificate for panel
     openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
@@ -651,11 +697,66 @@ start_hostpanel() {
 }
 
 # Configure firewall
+configure_sudoers() {
+    log_info "Configuring sudoers for HostPanel..."
+    # Allow the API (www-data) to run psql/createdb as the postgres OS user
+    # so PostgreSQL provisioning works without a superuser password.
+    echo 'www-data ALL=(postgres) NOPASSWD: /usr/bin/psql,/usr/bin/createdb' \
+        > /etc/sudoers.d/hostpanel-pg
+    chmod 440 /etc/sudoers.d/hostpanel-pg
+
+    # Allow the API (www-data) to drop privileges to any unix user when invoking
+    # the Claude Code CLI. ClaudeController validates the tenant username against
+    # ^[a-z0-9_-]+$ before passing it to sudo, so this is scoped to the single binary.
+    # The --preserve-env flag in the controller carries ANTHROPIC_API_KEY through.
+    cat > /etc/sudoers.d/hostpanel-claude <<'EOF'
+Defaults!/usr/local/bin/claude env_keep += "ANTHROPIC_API_KEY"
+www-data ALL=(ALL:ALL) NOPASSWD: /usr/local/bin/claude
+EOF
+    chmod 440 /etc/sudoers.d/hostpanel-claude
+
+    log_info "Sudoers configured"
+}
+
+install_vsftpd() {
+    log_info "Installing and configuring vsftpd..."
+    apt-get install -y -qq vsftpd
+    cat > /etc/vsftpd.conf <<'VSFCONF'
+listen=NO
+listen_ipv6=YES
+anonymous_enable=NO
+local_enable=YES
+write_enable=YES
+local_umask=022
+dirmessage_enable=YES
+use_localtime=YES
+xferlog_enable=YES
+connect_from_port_20=YES
+chroot_local_user=YES
+allow_writeable_chroot=YES
+secure_chroot_dir=/var/run/vsftpd/empty
+pam_service_name=vsftpd
+rsa_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem
+rsa_private_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
+ssl_enable=NO
+pasv_enable=YES
+pasv_min_port=40000
+pasv_max_port=40100
+VSFCONF
+    # Allow nologin shell for FTP-only accounts
+    grep -q '/usr/sbin/nologin' /etc/shells || echo '/usr/sbin/nologin' >> /etc/shells
+    systemctl enable vsftpd
+    systemctl restart vsftpd
+    log_info "vsftpd configured and started"
+}
+
 configure_firewall() {
     log_info "Configuring firewall..."
     ufw default deny incoming
     ufw default allow outgoing
     ufw allow 22/tcp     # SSH
+    ufw allow 21/tcp     # FTP
+    ufw allow 40000:40100/tcp  # FTP passive
     ufw allow 80/tcp     # HTTP
     ufw allow 443/tcp    # HTTPS
     ufw allow 8443/tcp   # HostPanel UI
@@ -693,9 +794,11 @@ main() {
     install_nodejs
     install_docker
     install_wpcli
+    install_vsftpd
     start_clamav
     install_webmail
     deploy_hostpanel
+    configure_sudoers
     configure_firewall
     start_hostpanel
 
@@ -708,8 +811,15 @@ main() {
     echo "================================================"
     echo ""
     echo "  Panel URL:    https://${PANEL_IP}:8443"
-    echo "  Admin Email:  ${ADMIN_EMAIL}"
-    echo "  Admin Pass:   ${ADMIN_PASSWORD}"
+    if [[ -n "${ADMIN_EMAIL}" && -n "${ADMIN_PASSWORD}" ]]; then
+        echo "  Admin Email:  ${ADMIN_EMAIL}"
+        echo "  Admin Pass:   ${ADMIN_PASSWORD}"
+    else
+        echo "  Admin Email:  (not seeded — open the panel URL to create one)"
+        echo ""
+        echo "  → First-time setup: visit https://${PANEL_IP}:8443/ in a browser."
+        echo "    The panel will prompt you to create the admin account."
+    fi
     echo ""
     if [[ "$SKIP_MSSQL" == "false" && -n "$SQL_PASSWORD" ]]; then
         echo "  SQL Server SA Password: ${SQL_PASSWORD}"

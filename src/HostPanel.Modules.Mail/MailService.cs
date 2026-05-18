@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using HostPanel.Core.DTOs;
+using HostPanel.Core.Interfaces;
 using HostPanel.Core.Models;
 using HostPanel.Infrastructure.Data;
 
@@ -8,11 +10,13 @@ namespace HostPanel.Modules.Mail;
 public class MailService
 {
     private readonly AppDbContext _db;
+    private readonly IServerAgent _agent;
     private readonly ILogger<MailService> _logger;
 
-    public MailService(AppDbContext db, ILogger<MailService> logger)
+    public MailService(AppDbContext db, IServerAgent agent, ILogger<MailService> logger)
     {
         _db = db;
+        _agent = agent;
         _logger = logger;
     }
 
@@ -42,6 +46,7 @@ public class MailService
 
         _db.Mailboxes.Add(mailbox);
         await _db.SaveChangesAsync(ct);
+        await ReProvisionDomainAsync(domainId, ct);
 
         _logger.LogInformation("Created mailbox {Address}", address);
         return mailbox;
@@ -49,11 +54,15 @@ public class MailService
 
     public async Task DeleteMailboxAsync(int mailboxId, CancellationToken ct = default)
     {
-        var mailbox = await _db.Mailboxes.FindAsync([mailboxId], ct)
+        var mailbox = await _db.Mailboxes
+            .Include(m => m.Domain)
+            .FirstOrDefaultAsync(m => m.Id == mailboxId, ct)
             ?? throw new InvalidOperationException("Mailbox not found");
 
+        var domainId = mailbox.DomainId;
         _db.Mailboxes.Remove(mailbox);
         await _db.SaveChangesAsync(ct);
+        await ReProvisionDomainAsync(domainId, ct);
         _logger.LogInformation("Deleted mailbox {Address}", mailbox.Address);
     }
 
@@ -71,6 +80,7 @@ public class MailService
 
         _db.MailAliases.Add(alias);
         await _db.SaveChangesAsync(ct);
+        await ReProvisionDomainAsync(domainId, ct);
         _logger.LogInformation("Created alias {Source} -> {Dest}", alias.Source, alias.Destination);
         return alias;
     }
@@ -82,6 +92,49 @@ public class MailService
 
         mailbox.PasswordHash = HashPassword(newPassword);
         await _db.SaveChangesAsync(ct);
+        await ReProvisionDomainAsync(mailbox.DomainId, ct);
+    }
+
+    /// <summary>
+    /// Fetches current mailboxes + aliases for the domain and calls mail.provision
+    /// on the agent so postfix/dovecot file maps stay in sync with the DB.
+    /// </summary>
+    private async Task ReProvisionDomainAsync(int domainId, CancellationToken ct)
+    {
+        var domain = await _db.Domains
+            .Include(d => d.Mailboxes)
+            .Include(d => d.MailAliases)
+            .FirstOrDefaultAsync(d => d.Id == domainId, ct);
+        if (domain is null) return;
+
+        var mailboxes = domain.Mailboxes.Select(m => new Dictionary<string, object?>
+        {
+            ["address"] = m.Address,
+            ["passwordHash"] = m.PasswordHash,
+            ["quotaMb"] = m.QuotaMb
+        }).ToList<object?>();
+
+        var aliases = domain.MailAliases.Select(a => new Dictionary<string, object?>
+        {
+            ["source"] = a.Source,
+            ["destination"] = a.Destination
+        }).ToList<object?>();
+
+        var result = await _agent.ExecuteAsync(new AgentRequest
+        {
+            Method = AgentMethods.MailProvision,
+            Params = new Dictionary<string, object?>
+            {
+                ["domain"] = domain.Name,
+                ["hostname"] = $"mail.{domain.Name}",
+                ["mailboxes"] = mailboxes,
+                ["aliases"] = aliases
+            }
+        }, ct);
+
+        if (!result.IsSuccess)
+            _logger.LogWarning("mail.provision failed for {Domain}: {Err}",
+                domain.Name, result.Error?.Message);
     }
 
     /// <summary>

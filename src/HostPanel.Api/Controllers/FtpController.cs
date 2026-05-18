@@ -46,7 +46,10 @@ public class FtpController : ControllerBase
         var sub = await _db.Subscriptions.FindAsync(subscriptionId);
         if (sub is null) return NotFound();
 
-        var homeDir = $"/var/www/{sub.SystemUsername}/{request.Directory}";
+        // If caller supplies an absolute path, use it directly; otherwise treat as relative to subscription base.
+        var homeDir = string.IsNullOrEmpty(request.Directory) || !request.Directory.StartsWith('/')
+            ? $"/var/www/{sub.SystemUsername}/{request.Directory ?? ""}"
+            : request.Directory;
         var ftpUser = $"{sub.SystemUsername}_{request.Username}";
 
         // Create system FTP user via agent

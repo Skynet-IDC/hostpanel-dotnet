@@ -5,7 +5,7 @@ set -euo pipefail
 
 BASE_URL="${1:-https://localhost:8443}"
 ADMIN_EMAIL="${2:-admin@hostpanel.local}"
-ADMIN_PASSWORD="${3:-REDACTED-PASSWORD}"
+ADMIN_PASSWORD="${3:-CHANGE-ME-IN-PRODUCTION}"
 CURL="curl -sk --max-time 10"
 
 PASS=0

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using HostPanel.Core.Enums;
+using HostPanel.Core.Interfaces;
 using HostPanel.Core.Models;
 using HostPanel.Infrastructure.Data;
 using HostPanel.Modules.Dns;
@@ -56,25 +57,55 @@ public class DnsController : ControllerBase
             if (domain is null) return NotFound();
 
             var provider = _dnsFactory.GetProvider(request.Provider ?? DnsProviderType.PowerDns);
-            var providerZone = await provider.CreateZoneAsync(domain.Name);
+            string zoneId;
+            try
+            {
+                var providerZone = await provider.CreateZoneAsync(domain.Name);
+                zoneId = providerZone.ZoneId;
+            }
+            catch (System.Net.Http.HttpRequestException ex) when (ex.Message.Contains("409"))
+            {
+                // Zone already exists in the provider — use the domain name as zone ID
+                zoneId = domain.Name;
+            }
 
             zone = new DnsZone
             {
                 DomainId = domainId,
                 Name = domain.Name,
                 Provider = request.Provider ?? DnsProviderType.PowerDns,
-                ProviderZoneId = providerZone.ZoneId
+                ProviderZoneId = zoneId
             };
             _db.DnsZones.Add(zone);
             await _db.SaveChangesAsync();
         }
 
-        // Add to provider
+        // Add to provider. Bug #46: external Cloudflare zones (or any zone the panel's
+        // PowerDNS doesn't actually authority for) surface as 404/500 from the provider —
+        // translate into a clear 422 with remediation hints rather than leaking 500s.
         var dnsProvider = _dnsFactory.GetProvider(zone.Provider);
-        var providerRecord = await dnsProvider.AddRecordAsync(
-            zone.ProviderZoneId ?? zone.Name,
-            request.Type, request.Name, request.Value,
-            request.Ttl, request.Priority);
+        DnsProviderRecord providerRecord;
+        try
+        {
+            providerRecord = await dnsProvider.AddRecordAsync(
+                zone.ProviderZoneId ?? zone.Name,
+                request.Type, request.Name, request.Value,
+                request.Ttl, request.Priority);
+        }
+        catch (System.Net.Http.HttpRequestException ex) when (
+            ex.Message.Contains("404", System.StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("Not Found", System.StringComparison.OrdinalIgnoreCase))
+        {
+            return UnprocessableEntity(new
+            {
+                message = $"DNS zone for {zone.Name} is not provisioned in {zone.Provider}.",
+                hint = zone.Provider == DnsProviderType.PowerDns
+                    ? "This domain's authoritative DNS is hosted elsewhere (likely Cloudflare). Add the record at the external provider, or migrate the zone to the panel's PowerDNS by NS-delegating it."
+                    : "The external provider rejected the zone ID. Verify the zone exists and the API token has Edit access.",
+                zone = zone.Name,
+                provider = zone.Provider.ToString(),
+            });
+        }
 
         // Save to DB
         var record = new DnsRecord

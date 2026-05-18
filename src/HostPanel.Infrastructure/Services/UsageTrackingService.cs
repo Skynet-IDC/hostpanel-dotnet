@@ -34,16 +34,45 @@ public class UsageTrackingService : IBillingMeter
         }, ct);
 
         if (result.IsSuccess && result.Result?.Data?.TryGetValue("diskUsageBytes", out var usage) == true)
-            return Convert.ToInt64(usage);
+        {
+            if (usage is System.Text.Json.JsonElement je && je.TryGetInt64(out var n)) return n;
+            if (usage is long l) return l;
+            if (usage is int i) return i;
+            if (usage is string s && long.TryParse(s, out var ls)) return ls;
+            try { return Convert.ToInt64(usage); } catch { return 0; }
+        }
 
         return 0;
     }
 
     public async Task<long> GetBandwidthUsageBytesAsync(int subscriptionId, DateTime periodStart, DateTime periodEnd, CancellationToken ct = default)
     {
-        // In production, parse Nginx access logs or use nftables counters
-        // For now, return 0 as placeholder
-        await Task.CompletedTask;
+        // Resolve the subscription's hostnames so the agent can filter nginx logs.
+        var hostnames = await _db.Domains
+            .Where(d => d.SubscriptionId == subscriptionId)
+            .Select(d => d.Name)
+            .ToListAsync(ct);
+        if (hostnames.Count == 0) return 0;
+
+        var result = await _agent.ExecuteAsync(new AgentRequest
+        {
+            Method = AgentMethods.SystemGetBandwidth,
+            Params = new Dictionary<string, object?>
+            {
+                ["hostnames"] = hostnames,
+                ["since"] = periodStart.ToString("o"),
+            }
+        }, ct);
+
+        if (result.IsSuccess && result.Result?.Data?.TryGetValue("bytes", out var v) == true)
+        {
+            // Same JsonElement guard as #16/#42/#49.
+            if (v is System.Text.Json.JsonElement je && je.TryGetInt64(out var n)) return n;
+            if (v is long l) return l;
+            if (v is int i) return i;
+            if (v is string s && long.TryParse(s, out var ls)) return ls;
+            try { return Convert.ToInt64(v); } catch { return 0; }
+        }
         return 0;
     }
 

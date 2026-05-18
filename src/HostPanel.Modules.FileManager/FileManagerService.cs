@@ -143,7 +143,13 @@ public class FileManagerService
     private static string ResolveSafePath(string basePath, string relativePath)
     {
         var normalizedBase = Path.GetFullPath(basePath);
-        var combined = Path.GetFullPath(Path.Combine(normalizedBase, relativePath));
+        // Strip leading slashes so "/" and absolute-looking paths are treated as
+        // relative to the domain root, not as filesystem root (which bypasses the check).
+        var sanitized = relativePath.TrimStart('/');
+        var combined = Path.GetFullPath(
+            string.IsNullOrEmpty(sanitized)
+                ? normalizedBase
+                : Path.Combine(normalizedBase, sanitized));
 
         if (!combined.StartsWith(normalizedBase, StringComparison.OrdinalIgnoreCase))
             throw new UnauthorizedAccessException("Path traversal detected");

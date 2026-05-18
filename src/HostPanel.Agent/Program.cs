@@ -8,6 +8,7 @@ builder.Services.AddSingleton<TokenAuthService>();
 
 // Method handlers - System
 builder.Services.AddSingleton<IAgentMethodHandler, SystemStatsHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, SystemGetBandwidthHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, SystemCreateUserHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, SystemDeleteUserHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, SystemSetQuotaHandler>();
@@ -100,6 +101,18 @@ builder.Services.AddSingleton<IAgentMethodHandler, HaRemoveFloatingIpHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, HaSendGratuitousArpHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, PanelFullUpdateHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, PanelFullRollbackHandler>();
+
+// Mail provisioning and SSL
+builder.Services.AddSingleton<IAgentMethodHandler, MailProvisionHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, MailConfigureSslHandler>();
+
+// Migration (Plesk → HostPanel)
+builder.Services.AddSingleton<IAgentMethodHandler, MigrationRsyncFromPleskHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, MigrationMysqldumpRemoteHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, MigrationImapsyncHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, MigrationDetectWordPressHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, MigrationVerifyCutoverHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, MigrationPatchWpConfigHandler>();
 
 builder.Services.AddSingleton<MethodRegistry>();
 builder.Services.AddHostedService<Worker>();

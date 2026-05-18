@@ -20,13 +20,16 @@ public class DomainsController : ControllerBase
     private readonly AppDbContext _db;
     private readonly TenantAuthorizationService _auth;
     private readonly IServerAgent _agent;
+    private readonly HostPanel.Infrastructure.Services.WebhookDispatcher _webhooks;
     private readonly ILogger<DomainsController> _logger;
 
-    public DomainsController(AppDbContext db, TenantAuthorizationService auth, IServerAgent agent, ILogger<DomainsController> logger)
+    public DomainsController(AppDbContext db, TenantAuthorizationService auth, IServerAgent agent,
+        HostPanel.Infrastructure.Services.WebhookDispatcher webhooks, ILogger<DomainsController> logger)
     {
         _db = db;
         _auth = auth;
         _agent = agent;
+        _webhooks = webhooks;
         _logger = logger;
     }
 
@@ -112,12 +115,16 @@ public class DomainsController : ControllerBase
             {
                 ["domain"] = domain.Name,
                 ["docRoot"] = domain.DocumentRoot,
-                ["phpVersion"] = domain.PhpVersion ?? "8.3"
+                ["phpVersion"] = domain.PhpVersion ?? "8.3",
+                ["username"] = sub.SystemUsername
             }
         });
         if (!vhostResult.IsSuccess)
             _logger.LogWarning("Failed to create nginx vhost for {Domain}: {Error}",
                 domain.Name, vhostResult.Error?.Message);
+
+        _ = _webhooks.FireAsync(HostPanel.Core.Enums.WebhookEvents.DomainCreated,
+            new { domainId = domain.Id, name = domain.Name, subscriptionId = domain.SubscriptionId });
 
         return CreatedAtAction(nameof(Get), new { id = domain.Id }, MapToDto(domain));
     }

@@ -49,19 +49,20 @@ public class SslController : ControllerBase
 
     [HttpPost("issue")]
     [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
-    public async Task<IActionResult> Issue(int domainId)
+    public async Task<IActionResult> Issue(int domainId, [FromQuery] bool issueMailCert = true)
     {
         if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
 
         try
         {
-            var cert = await _sslService.IssueCertificateAsync(domainId, HttpContext.RequestAborted);
+            var cert = await _sslService.IssueCertificateAsync(domainId, HttpContext.RequestAborted, issueMailCert);
             return Ok(new
             {
                 success = true,
                 provider = cert.Provider,
                 issuedAt = cert.IssuedAt,
-                expiresAt = cert.ExpiresAt
+                expiresAt = cert.ExpiresAt,
+                mailCertIssued = issueMailCert
             });
         }
         catch (Exception ex)

@@ -19,8 +19,13 @@ public class SystemStatsHandler : IAgentMethodHandler
             ["uptimeSeconds"] = Environment.TickCount64 / 1000
         };
 
-        // Per-user disk usage if username provided
-        var username = parameters.TryGetValue("username", out var u) ? u?.ToString() ?? (u is JsonElement je ? je.GetString() : null) : null;
+        // Per-user disk usage if username provided.
+        // BUGFIX (mirrors #16/#42/#49): parameters round-trip through System.Text.Json so the value
+        // is a JsonElement, not a plain string. `JsonElement.ToString()` returns the JSON repr
+        // (with quotes) — we must call `.GetString()` first.
+        var username = parameters.TryGetValue("username", out var u)
+            ? (u is JsonElement je ? je.GetString() : u?.ToString())
+            : null;
         if (!string.IsNullOrEmpty(username))
         {
             var homeDir = $"/var/www/{username}";

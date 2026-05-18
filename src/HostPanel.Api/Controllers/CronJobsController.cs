@@ -110,7 +110,7 @@ public class CronJobsController : ControllerBase
             .Where(j => j.SubscriptionId == subscriptionId && j.Enabled)
             .ToListAsync();
 
-        var crontab = string.Join("\n", jobs.Select(j => $"{j.Schedule} {j.Command}"));
+        var crontab = string.Join("\n", jobs.Select(j => $"{j.Schedule} {j.Command}")) + "\n";
 
         // Write crontab via agent (no shell pipelines - uses crontab binary)
         await _agent.ExecuteAsync(new AgentRequest

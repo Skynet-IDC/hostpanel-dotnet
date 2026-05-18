@@ -315,6 +315,9 @@ namespace HostPanel.Infrastructure.Data.Migrations
                     b.Property<string>("AccentColor")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<bool>("Configured")
+                        .HasColumnType("bit");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
@@ -407,6 +410,47 @@ namespace HostPanel.Infrastructure.Data.Migrations
                     b.HasIndex("SubscriptionId");
 
                     b.ToTable("CronJobs");
+                });
+
+            modelBuilder.Entity("HostPanel.Core.Models.CustomerBranding", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LoginBackgroundUrl")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("LoginMessage")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("LogoUrl")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PanelName")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PrimaryColor")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("UserId")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique();
+
+                    b.ToTable("CustomerBrandings");
                 });
 
             modelBuilder.Entity("HostPanel.Core.Models.DesiredState", b =>
@@ -1025,6 +1069,125 @@ namespace HostPanel.Infrastructure.Data.Migrations
                     b.ToTable("Mailboxes");
                 });
 
+            modelBuilder.Entity("HostPanel.Core.Models.MigrationJob", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("CutoverAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DiscoveryJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("MigrationLog")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("MigrationSourceId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PreflightReport")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime?>("RolledBackAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("ServicePlanId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SourceDomain")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<DateTime?>("StagedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<int?>("TargetSubscriptionId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("TargetUserId")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("State");
+
+                    b.HasIndex("MigrationSourceId", "SourceDomain");
+
+                    b.ToTable("MigrationJobs");
+                });
+
+            modelBuilder.Entity("HostPanel.Core.Models.MigrationSource", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DnsProvider")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Host")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PleskApiKey")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("PleskApiPort")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SshKeyPath")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("SshPort")
+                        .HasColumnType("int");
+
+                    b.Property<string>("SshUser")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("MigrationSources");
+                });
+
             modelBuilder.Entity("HostPanel.Core.Models.Server", b =>
                 {
                     b.Property<int>("Id")
@@ -1136,6 +1299,9 @@ namespace HostPanel.Infrastructure.Data.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("CustomerUserId")
+                        .HasColumnType("nvarchar(450)");
+
                     b.Property<int>("DefaultBillingPeriod")
                         .HasColumnType("int");
 
@@ -1152,6 +1318,9 @@ namespace HostPanel.Infrastructure.Data.Migrations
                         .HasColumnType("int");
 
                     b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsCustom")
                         .HasColumnType("bit");
 
                     b.Property<int>("MaxDatabases")
@@ -1182,6 +1351,8 @@ namespace HostPanel.Infrastructure.Data.Migrations
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CustomerUserId");
 
                     b.ToTable("ServicePlans");
                 });
@@ -1318,6 +1489,43 @@ namespace HostPanel.Infrastructure.Data.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("Subscriptions");
+                });
+
+            modelBuilder.Entity("HostPanel.Core.Models.SystemSetting", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Category")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("IsSensitive")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("UpdatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Value")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Key")
+                        .IsUnique();
+
+                    b.ToTable("SystemSettings");
                 });
 
             modelBuilder.Entity("HostPanel.Core.Models.TotpToken", b =>
@@ -1653,6 +1861,17 @@ namespace HostPanel.Infrastructure.Data.Migrations
                     b.Navigation("Subscription");
                 });
 
+            modelBuilder.Entity("HostPanel.Core.Models.CustomerBranding", b =>
+                {
+                    b.HasOne("HostPanel.Core.Models.AppUser", "User")
+                        .WithOne()
+                        .HasForeignKey("HostPanel.Core.Models.CustomerBranding", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("HostPanel.Core.Models.DnsRecord", b =>
                 {
                     b.HasOne("HostPanel.Core.Models.DnsZone", "DnsZone")
@@ -1774,6 +1993,17 @@ namespace HostPanel.Infrastructure.Data.Migrations
                     b.Navigation("Domain");
                 });
 
+            modelBuilder.Entity("HostPanel.Core.Models.MigrationJob", b =>
+                {
+                    b.HasOne("HostPanel.Core.Models.MigrationSource", "MigrationSource")
+                        .WithMany()
+                        .HasForeignKey("MigrationSourceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("MigrationSource");
+                });
+
             modelBuilder.Entity("HostPanel.Core.Models.ServerIpAddress", b =>
                 {
                     b.HasOne("HostPanel.Core.Models.Subscription", "Subscription")
@@ -1781,6 +2011,15 @@ namespace HostPanel.Infrastructure.Data.Migrations
                         .HasForeignKey("SubscriptionId");
 
                     b.Navigation("Subscription");
+                });
+
+            modelBuilder.Entity("HostPanel.Core.Models.ServicePlan", b =>
+                {
+                    b.HasOne("HostPanel.Core.Models.AppUser", "CustomerUser")
+                        .WithMany()
+                        .HasForeignKey("CustomerUserId");
+
+                    b.Navigation("CustomerUser");
                 });
 
             modelBuilder.Entity("HostPanel.Core.Models.SmtpRelayConfig", b =>

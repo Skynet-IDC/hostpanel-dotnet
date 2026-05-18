@@ -35,8 +35,12 @@ public class WordPressInstallHandler : IAgentMethodHandler
             return Fail("Invalid database user");
 
         // Create MySQL database - each statement as separate -e call to avoid shell issues
+        var escapedPass = dbPass!.Replace("'", "''");
         await ProcessRunner.RunAsync("/usr/bin/mysql", ["-e", $"CREATE DATABASE IF NOT EXISTS `{dbName}`"], ct);
-        await ProcessRunner.RunAsync("/usr/bin/mysql", ["-e", $"CREATE USER IF NOT EXISTS '{dbUser}'@'localhost' IDENTIFIED BY '{dbPass!.Replace("'", "''")}'"], ct);
+        await ProcessRunner.RunAsync("/usr/bin/mysql", ["-e", $"CREATE USER IF NOT EXISTS '{dbUser}'@'localhost' IDENTIFIED BY '{escapedPass}'"], ct);
+        // ALTER USER resets the password even when CREATE USER IF NOT EXISTS was a no-op
+        // (i.e. user already existed from a prior install with a different random password).
+        await ProcessRunner.RunAsync("/usr/bin/mysql", ["-e", $"ALTER USER '{dbUser}'@'localhost' IDENTIFIED BY '{escapedPass}'"], ct);
         await ProcessRunner.RunAsync("/usr/bin/mysql", ["-e", $"GRANT ALL ON `{dbName}`.* TO '{dbUser}'@'localhost'"], ct);
         await ProcessRunner.RunAsync("/usr/bin/mysql", ["-e", "FLUSH PRIVILEGES"], ct);
 

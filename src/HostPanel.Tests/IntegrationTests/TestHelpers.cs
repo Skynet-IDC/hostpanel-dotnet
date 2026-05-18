@@ -6,7 +6,7 @@ namespace HostPanel.Tests.IntegrationTests;
 
 public static class TestHelpers
 {
-    public static async Task<string> LoginAsync(HttpClient client, string email = "admin@hostpanel.local", string password = "REDACTED-PASSWORD")
+    public static async Task<string> LoginAsync(HttpClient client, string email = "admin@hostpanel.local", string password = "CHANGE-ME-IN-PRODUCTION")
     {
         var response = await client.PostAsJsonAsync("/api/v1/auth/login", new { email, password });
         response.EnsureSuccessStatusCode();

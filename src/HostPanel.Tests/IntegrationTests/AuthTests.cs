@@ -14,7 +14,7 @@ public class AuthTests : IClassFixture<TestWebApplicationFactory>
     public async Task Login_WithValidCredentials_ReturnsToken()
     {
         var response = await _client.PostAsJsonAsync("/api/v1/auth/login",
-            new { email = "admin@hostpanel.local", password = "REDACTED-PASSWORD" });
+            new { email = "admin@hostpanel.local", password = "CHANGE-ME-IN-PRODUCTION" });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var json = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();

@@ -23,6 +23,55 @@ public class BillingController : ControllerBase
         _logger = logger;
     }
 
+    /// <summary>
+    /// Manually generate an invoice for a subscription right now (bug #53). Normally invoices
+    /// are auto-created by BillingCycleService at midnight when sub.NextInvoiceDate &lt;= now.
+    /// This endpoint bypasses that cycle for: signup invoices, ad-hoc charges, plan-change pro-rations.
+    /// Admin/Reseller only.
+    /// </summary>
+    [HttpPost("invoices/generate")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
+    public async Task<IActionResult> GenerateInvoice([FromBody] GenerateInvoiceRequest req)
+    {
+        var sub = await _db.Subscriptions
+            .Include(s => s.User)
+            .Include(s => s.ServicePlan)
+            .FirstOrDefaultAsync(s => s.Id == req.SubscriptionId);
+        if (sub is null) return NotFound(new { message = "Subscription not found" });
+
+        // Tenant guard: resellers can only invoice their own customers
+        var role = User.FindFirstValue(ClaimTypes.Role);
+        var callerId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (role == UserRole.Reseller.ToString() && sub.User.ParentUserId != callerId && sub.UserId != callerId)
+            return Forbid();
+
+        var amount = req.Amount ?? sub.ServicePlan.PricePerPeriod;
+        var currency = req.Currency ?? "USD";
+        var dueDate = req.DueDate ?? DateTime.UtcNow.AddDays(14);
+
+        var invoice = new HostPanel.Core.Models.Invoice
+        {
+            SubscriptionId = sub.Id,
+            Provider = PaymentProvider.Stripe,  // default — webhook reconciliation updates on payment
+            Amount = amount,
+            Currency = currency,
+            Status = InvoiceStatus.Sent,
+            DueDate = dueDate,
+        };
+        _db.Invoices.Add(invoice);
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation("Manual invoice generated: id={Id} sub={SubId} amount={Amount} {Currency} due={Due}",
+            invoice.Id, sub.Id, amount, currency, dueDate);
+
+        return CreatedAtAction(nameof(ListInvoices), new { subscriptionId = sub.Id }, new
+        {
+            invoice.Id, invoice.SubscriptionId, invoice.Provider, invoice.Amount, invoice.Currency,
+            invoice.Status, invoice.DueDate, invoice.CreatedAt,
+            downloadUrl = $"/api/v1/billing/invoices/{invoice.Id}/pdf",
+        });
+    }
+
     [HttpGet("invoices")]
     [Authorize]
     public async Task<IActionResult> ListInvoices([FromQuery] int? subscriptionId)
@@ -130,3 +179,5 @@ public class BillingController : ControllerBase
         _logger.LogInformation("Invoice {InvoiceId} marked paid via webhook", invoice.Id);
     }
 }
+
+public record GenerateInvoiceRequest(int SubscriptionId, decimal? Amount = null, string? Currency = null, DateTime? DueDate = null);

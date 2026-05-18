@@ -47,7 +47,10 @@ public class GitDeployHandler : IAgentMethodHandler
             ["-C", deployPath, "rev-parse", "HEAD"], ct);
 
         if (!string.IsNullOrEmpty(username))
+        {
             await ProcessRunner.RunAsync("/bin/chown", ["-R", $"{username}:{username}", deployPath], ct);
+            await ProcessRunner.RunAsync("/bin/chmod", ["2775", deployPath], ct);
+        }
 
         return new AgentResult
         {
@@ -62,8 +65,15 @@ public class GitDeployHandler : IAgentMethodHandler
     }
 
     private static AgentResult Fail(string msg) => new() { Success = false, Data = new() { ["error"] = msg } };
-    private static string? GetStr(Dictionary<string, object?> p, string k) =>
-        p.TryGetValue(k, out var v) ? v?.ToString() ?? (v is JsonElement je ? je.GetString() : null) : null;
+    // Fix: JsonElement.ToString() returns JSON-encoded form (with quotes for strings).
+    // Use GetString() for string-kind JsonElements.
+    private static string? GetStr(Dictionary<string, object?> p, string k)
+    {
+        if (!p.TryGetValue(k, out var v) || v is null) return null;
+        if (v is JsonElement je)
+            return je.ValueKind == JsonValueKind.String ? je.GetString() : je.ToString();
+        return v.ToString();
+    }
 }
 
 // --- FTP ---

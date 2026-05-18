@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import { Badge, Card, Empty, PageHead, Stat, Switch } from '../components/ui/primitives';
+import { Icons } from '../components/ui/Icons';
+
+interface DomainSummary { id: number; name: string }
 
 interface SslStatus {
   enabled: boolean;
@@ -9,148 +13,162 @@ interface SslStatus {
   autoRenew: boolean;
 }
 
+function expiryTone(days: number | null) {
+  if (days === null) return 'default' as const;
+  if (days <= 7) return 'danger' as const;
+  if (days <= 30) return 'warn' as const;
+  return 'success' as const;
+}
+
 export function SslPage() {
-  const [domains, setDomains] = useState<{ id: number; name: string }[]>([]);
+  const [domains, setDomains] = useState<DomainSummary[]>([]);
   const [domainId, setDomainId] = useState<number | null>(null);
   const [ssl, setSsl] = useState<SslStatus | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [err, setErr] = useState<string | null>(null);
   const [issuing, setIssuing] = useState(false);
   const [toggling, setToggling] = useState(false);
 
   useEffect(() => {
-    api.get('/domains').then((res) => {
-      setDomains(res.data);
-      if (res.data.length > 0) setDomainId(res.data[0].id);
-    }).finally(() => setLoading(false));
+    api.get<DomainSummary[]>('/domains')
+      .then(r => {
+        setDomains(r.data);
+        if (r.data.length > 0) setDomainId(r.data[0].id);
+      })
+      .catch(e => setErr(e instanceof Error ? e.message : 'Failed to load domains'))
+      .finally(() => setLoading(false));
   }, []);
 
-  const loadSsl = () => {
+  const loadSsl = async () => {
     if (!domainId) return;
-    setLoading(true);
-    setError('');
-    api.get(`/domains/${domainId}/ssl/status`)
-      .then((res) => setSsl(res.data))
-      .catch((err) => setError(err.response?.data?.message || 'Failed to load SSL status'))
-      .finally(() => setLoading(false));
+    setErr(null);
+    try {
+      const { data } = await api.get<SslStatus>(`/domains/${domainId}/ssl/status`);
+      setSsl(data);
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      setErr(msg ?? (e instanceof Error ? e.message : 'Load SSL failed'));
+    }
   };
 
-  useEffect(() => { loadSsl(); }, [domainId]);
+  useEffect(() => { void loadSsl(); }, [domainId]);
 
-  const handleIssue = async () => {
+  const issue = async () => {
     if (!domainId) return;
     setIssuing(true);
     try {
       await api.post(`/domains/${domainId}/ssl/issue`);
-      loadSsl();
-    } catch (err: any) {
-      alert(err.response?.data?.message || 'Failed to issue certificate');
+      await loadSsl();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      alert(msg ?? 'Issue failed');
     } finally {
       setIssuing(false);
     }
   };
 
-  const handleToggleAutoRenew = async () => {
+  const toggle = async () => {
     if (!domainId) return;
     setToggling(true);
     try {
       await api.post(`/domains/${domainId}/ssl/toggle-auto-renew`);
-      loadSsl();
-    } catch (err: any) {
-      alert(err.response?.data?.message || 'Failed to toggle auto-renew');
+      await loadSsl();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      alert(msg ?? 'Toggle failed');
     } finally {
       setToggling(false);
     }
   };
 
-  const selectedDomain = domains.find((d) => d.id === domainId);
-
-  const expiryColor = (days: number | null) => {
-    if (days === null) return 'text-gray-500';
-    if (days <= 7) return 'text-red-600';
-    if (days <= 30) return 'text-yellow-600';
-    return 'text-green-600';
-  };
+  const selected = domains.find(d => d.id === domainId);
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">SSL / TLS</h2>
-        <select
-          value={domainId ?? ''}
-          onChange={(e) => setDomainId(Number(e.target.value))}
-          className="border border-gray-300 rounded px-3 py-2"
-        >
-          {domains.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
-      </div>
+    <>
+      <PageHead
+        title="SSL / TLS"
+        sub="Let's Encrypt + manual certs · per-domain status"
+        actions={
+          domains.length > 0 && (
+            <select
+              className="select"
+              style={{ maxWidth: 280 }}
+              value={domainId ?? ''}
+              onChange={e => setDomainId(Number(e.target.value))}
+            >
+              {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          )
+        }
+      />
 
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded">{error}</div>
-      )}
+      {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
 
       {loading ? (
-        <div className="text-gray-500">Loading SSL status...</div>
-      ) : ssl ? (
-        <div className="bg-white rounded-lg shadow p-6">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-semibold text-gray-900">
-              SSL for {selectedDomain?.name}
-            </h3>
-            <span className={`text-sm font-medium px-3 py-1 rounded ${
-              ssl.enabled
-                ? 'bg-green-100 text-green-700'
-                : 'bg-gray-100 text-gray-500'
-            }`}>
-              {ssl.enabled ? 'Enabled' : 'Disabled'}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
-            <div>
-              <p className="text-sm text-gray-500 mb-1">Provider</p>
-              <p className="text-gray-900 font-medium">{ssl.provider || 'None'}</p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500 mb-1">Expiry Date</p>
-              <p className="text-gray-900 font-medium">
-                {ssl.expiryDate ? new Date(ssl.expiryDate).toLocaleDateString() : 'N/A'}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500 mb-1">Days Until Expiry</p>
-              <p className={`font-medium ${expiryColor(ssl.daysUntilExpiry)}`}>
-                {ssl.daysUntilExpiry !== null ? `${ssl.daysUntilExpiry} days` : 'N/A'}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500 mb-1">Auto-Renew</p>
-              <p className="text-gray-900 font-medium">{ssl.autoRenew ? 'On' : 'Off'}</p>
-            </div>
-          </div>
-
-          <div className="flex gap-3">
-            <button
-              onClick={handleIssue}
-              disabled={issuing}
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-            >
-              {issuing ? 'Issuing...' : 'Issue Certificate'}
-            </button>
-            <button
-              onClick={handleToggleAutoRenew}
-              disabled={toggling}
-              className="px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-50"
-            >
-              {toggling ? 'Toggling...' : `${ssl.autoRenew ? 'Disable' : 'Enable'} Auto-Renew`}
-            </button>
-          </div>
-        </div>
+        <Card><div className="muted" style={{ padding: 8 }}>Loading…</div></Card>
+      ) : domains.length === 0 ? (
+        <Card>
+          <Empty icon="lock" title="No domains" sub="Add a domain first; SSL operates per-domain." />
+        </Card>
+      ) : !ssl ? (
+        <Card><div className="muted" style={{ padding: 8 }}>No SSL data.</div></Card>
       ) : (
-        <div className="text-gray-500">No SSL data available.</div>
+        <>
+          <div className="stats" style={{ marginBottom: 16 }}>
+            <Stat
+              label="Status"
+              icon={ssl.enabled ? 'lock' : 'lockOpen'}
+              value={ssl.enabled ? 'Active' : 'Disabled'}
+              foot={<span className="muted">{ssl.provider ?? 'No provider'}</span>}
+            />
+            <Stat
+              label="Expires"
+              icon="clock"
+              value={ssl.expiryDate ? new Date(ssl.expiryDate).toLocaleDateString() : '—'}
+              foot={ssl.daysUntilExpiry !== null && (
+                <Badge tone={expiryTone(ssl.daysUntilExpiry)} dot>{ssl.daysUntilExpiry} days</Badge>
+              )}
+            />
+            <Stat
+              label="Auto-renew"
+              icon="refresh"
+              value={ssl.autoRenew ? 'On' : 'Off'}
+              foot={<span className="muted">checks daily 4 weeks before expiry</span>}
+            />
+            <Stat
+              label="Domain"
+              icon="globe"
+              value={selected?.name ?? '—'}
+              foot={<a className="muted" href={`https://${selected?.name}`} target="_blank" rel="noreferrer">visit ↗</a>}
+            />
+          </div>
+
+          <Card title="Actions" sub="Issue or refresh the certificate. Let's Encrypt is rate-limited; one or two issues per week is safe.">
+            <div className="col gap-4">
+              <div className="row between">
+                <div>
+                  <div style={{ fontWeight: 600 }}>{ssl.enabled ? 'Re-issue certificate' : 'Issue certificate'}</div>
+                  <div className="muted" style={{ fontSize: 12 }}>HTTP-01 challenge for the apex. Wildcard via DNS-01 if Cloudflare token is set.</div>
+                </div>
+                <button className="btn primary" onClick={issue} disabled={issuing}>
+                  {issuing ? 'Issuing…' : ssl.enabled ? 'Re-issue' : 'Issue certificate'}
+                </button>
+              </div>
+
+              <div className="row between" style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>Auto-renew</div>
+                  <div className="muted" style={{ fontSize: 12 }}>When the cert is within 30 days of expiry, the panel re-issues automatically.</div>
+                </div>
+                <div className="row gap-2">
+                  <span className="muted" style={{ fontSize: 12 }}>{ssl.autoRenew ? 'On' : 'Off'}</span>
+                  <Switch on={ssl.autoRenew} onChange={() => !toggling && toggle()} />
+                </div>
+              </div>
+            </div>
+          </Card>
+        </>
       )}
-    </div>
+    </>
   );
 }

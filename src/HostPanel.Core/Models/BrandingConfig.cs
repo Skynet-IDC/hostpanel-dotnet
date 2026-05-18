@@ -16,4 +16,8 @@ public class BrandingConfig : BaseEntity
     public string? CustomCss { get; set; }
     public bool HidePoweredBy { get; set; }
     public int? ResellerId { get; set; }  // null = global, set = per-reseller branding
+
+    /// <summary>True once an admin completes the first-launch SetupWizard.
+    /// Used by GET /branding to tell the frontend whether to render the wizard.</summary>
+    public bool Configured { get; set; }
 }

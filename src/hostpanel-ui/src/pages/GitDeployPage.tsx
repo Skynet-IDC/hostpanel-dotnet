@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api/client';
+import { Badge, Card, Checkbox, Dialog, Empty, Field, PageHead, Stat } from '../components/ui/primitives';
+import { Icons } from '../components/ui/Icons';
 
 interface GitConfig {
   repoUrl: string | null;
@@ -13,237 +15,142 @@ interface GitConfig {
 export function GitDeployPage() {
   const [domains, setDomains] = useState<{ id: number; name: string }[]>([]);
   const [domainId, setDomainId] = useState<number | null>(null);
-  const [config, setConfig] = useState<GitConfig | null>(null);
+  const [cfg, setCfg] = useState<GitConfig | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [err, setErr] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
-
-  // Configure form
-  const [showForm, setShowForm] = useState(false);
-  const [formRepoUrl, setFormRepoUrl] = useState('');
-  const [formBranch, setFormBranch] = useState('main');
-  const [formProvider, setFormProvider] = useState('github');
-  const [formAutoDeploy, setFormAutoDeploy] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
 
   useEffect(() => {
-    api.get('/domains').then((res) => {
-      setDomains(res.data);
-      if (res.data.length > 0) setDomainId(res.data[0].id);
-    }).finally(() => setLoading(false));
+    api.get<{ id: number; name: string }[]>('/domains')
+      .then(r => { setDomains(r.data); if (r.data.length > 0) setDomainId(r.data[0].id); })
+      .finally(() => setLoading(false));
   }, []);
 
-  const loadConfig = () => {
+  const load = async () => {
     if (!domainId) return;
-    setLoading(true);
-    setError('');
-    api.get(`/domains/${domainId}/git`)
-      .then((res) => {
-        setConfig(res.data);
-        if (res.data.repoUrl) {
-          setFormRepoUrl(res.data.repoUrl);
-          setFormBranch(res.data.branch || 'main');
-          setFormProvider(res.data.provider || 'github');
-          setFormAutoDeploy(res.data.autoDeployEnabled || false);
-        }
-      })
-      .catch((err) => {
-        setConfig(null);
-        setError(err.response?.data?.message || 'Failed to load git config');
-      })
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { loadConfig(); }, [domainId]);
-
-  const handleSaveConfig = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!domainId) return;
-    setSaving(true);
+    setErr(null);
     try {
-      await api.post(`/domains/${domainId}/git`, {
-        repoUrl: formRepoUrl,
-        branch: formBranch,
-        provider: formProvider,
-        autoDeployEnabled: formAutoDeploy,
-      });
-      setShowForm(false);
-      loadConfig();
-    } catch (err: any) {
-      alert(err.response?.data?.message || 'Failed to save git config');
-    } finally {
-      setSaving(false);
+      const { data } = await api.get<GitConfig>(`/domains/${domainId}/git`);
+      setCfg(data);
+    } catch {
+      setCfg(null);
     }
   };
+  useEffect(() => { void load(); }, [domainId]);
 
-  const handleDeploy = async () => {
+  const deploy = async () => {
     if (!domainId) return;
     setDeploying(true);
     try {
       await api.post(`/domains/${domainId}/git/deploy`);
-      loadConfig();
-    } catch (err: any) {
-      alert(err.response?.data?.message || 'Deploy failed');
-    } finally {
-      setDeploying(false);
-    }
+      await load();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      alert(msg ?? 'Deploy failed');
+    } finally { setDeploying(false); }
   };
 
-  const selectedDomain = domains.find((d) => d.id === domainId);
+  const selected = domains.find(d => d.id === domainId);
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Git Deployment</h2>
-        <select
-          value={domainId ?? ''}
-          onChange={(e) => setDomainId(Number(e.target.value))}
-          className="border border-gray-300 rounded px-3 py-2"
-        >
-          {domains.map((d) => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
-      </div>
-
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded">{error}</div>
-      )}
-
-      {loading ? (
-        <div className="text-gray-500">Loading...</div>
-      ) : (
-        <>
-          {/* Current Config */}
-          <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                Configuration for {selectedDomain?.name}
-              </h3>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setShowForm(!showForm)}
-                  className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 text-sm"
-                >
-                  {showForm ? 'Cancel' : 'Configure'}
-                </button>
-                {config?.repoUrl && (
-                  <button
-                    onClick={handleDeploy}
-                    disabled={deploying}
-                    className="px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 text-sm"
-                  >
-                    {deploying ? 'Deploying...' : 'Deploy Now'}
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {config?.repoUrl ? (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm text-gray-500 mb-1">Repository URL</p>
-                  <p className="text-gray-900 font-mono text-sm">{config.repoUrl}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-500 mb-1">Branch</p>
-                  <p className="text-gray-900 font-medium">{config.branch}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-500 mb-1">Provider</p>
-                  <p className="text-gray-900 font-medium capitalize">{config.provider}</p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-500 mb-1">Auto-Deploy</p>
-                  <span className={`text-xs px-2 py-0.5 rounded ${
-                    config.autoDeployEnabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                  }`}>
-                    {config.autoDeployEnabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-500 mb-1">Last Deploy</p>
-                  <p className="text-gray-900 text-sm">
-                    {config.lastDeployAt ? new Date(config.lastDeployAt).toLocaleString() : 'Never'}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-sm text-gray-500 mb-1">Last Commit</p>
-                  <p className="text-gray-900 font-mono text-sm">
-                    {config.lastCommitHash ? config.lastCommitHash.substring(0, 8) : 'N/A'}
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <p className="text-gray-500">No git repository configured for this domain.</p>
+    <>
+      <PageHead
+        title="Git deployments"
+        sub={selected ? `Continuous deploy for ${selected.name}` : 'Pick a domain'}
+        actions={
+          <>
+            {domains.length > 0 && (
+              <select className="select" value={domainId ?? ''} onChange={e => setDomainId(Number(e.target.value))} style={{ maxWidth: 240 }}>
+                {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
             )}
-          </div>
+            <button className="btn" onClick={() => setFormOpen(true)} disabled={!domainId}><Icons.git />{cfg?.repoUrl ? 'Reconfigure' : 'Configure'}</button>
+            {cfg?.repoUrl && (
+              <button className="btn primary" onClick={deploy} disabled={deploying}><Icons.upload />{deploying ? 'Deploying…' : 'Deploy now'}</button>
+            )}
+          </>
+        }
+      />
 
-          {/* Configure Form */}
-          {showForm && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Configure Git Repository</h3>
-              <form onSubmit={handleSaveConfig} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="sm:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Repository URL</label>
-                  <input
-                    type="text"
-                    value={formRepoUrl}
-                    onChange={(e) => setFormRepoUrl(e.target.value)}
-                    placeholder="https://github.com/user/repo.git"
-                    required
-                    className="border border-gray-300 rounded px-3 py-2 w-full"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Branch</label>
-                  <input
-                    type="text"
-                    value={formBranch}
-                    onChange={(e) => setFormBranch(e.target.value)}
-                    required
-                    className="border border-gray-300 rounded px-3 py-2 w-full"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
-                  <select
-                    value={formProvider}
-                    onChange={(e) => setFormProvider(e.target.value)}
-                    className="border border-gray-300 rounded px-3 py-2 w-full"
-                  >
-                    <option value="github">GitHub</option>
-                    <option value="gitlab">GitLab</option>
-                    <option value="bitbucket">Bitbucket</option>
-                    <option value="custom">Custom</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    id="autoDeploy"
-                    checked={formAutoDeploy}
-                    onChange={(e) => setFormAutoDeploy(e.target.checked)}
-                    className="rounded border-gray-300"
-                  />
-                  <label htmlFor="autoDeploy" className="text-sm font-medium text-gray-700">
-                    Enable auto-deploy on push
-                  </label>
-                </div>
-                <div className="flex items-end">
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {saving ? 'Saving...' : 'Save Configuration'}
-                  </button>
-                </div>
-              </form>
+      {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
+
+      {loading ? <Card><div className="muted" style={{ padding: 8 }}>Loading…</div></Card>
+        : !cfg?.repoUrl ? (
+          <Card>
+            <Empty
+              icon="git"
+              title="No git repo configured"
+              sub="Connect a repository to enable continuous deploy from main/master."
+              action={<button className="btn primary" onClick={() => setFormOpen(true)} style={{ marginTop: 4 }} disabled={!domainId}><Icons.git />Configure repository</button>}
+            />
+          </Card>
+        ) : (
+          <>
+            <div className="stats" style={{ marginBottom: 16 }}>
+              <Stat label="Repository" icon="git" value={cfg.provider ?? '—'} foot={<span className="mono muted" style={{ fontSize: 11 }}>{cfg.repoUrl}</span>} />
+              <Stat label="Branch" icon="zap" value={cfg.branch ?? 'main'} />
+              <Stat label="Last deploy" icon="history" value={cfg.lastDeployAt ? new Date(cfg.lastDeployAt).toLocaleString() : 'Never'} foot={cfg.lastCommitHash ? <span className="mono muted" style={{ fontSize: 11 }}>{cfg.lastCommitHash.slice(0, 8)}</span> : undefined} />
+              <Stat label="Auto-deploy" icon="refresh" value={cfg.autoDeployEnabled ? 'On' : 'Off'} foot={cfg.autoDeployEnabled ? <Badge tone="success" dot>Webhook armed</Badge> : <Badge>Manual</Badge>} />
             </div>
-          )}
-        </>
-      )}
-    </div>
+          </>
+        )}
+
+      <ConfigDialog open={formOpen} onClose={() => setFormOpen(false)} domainId={domainId} initial={cfg} onSaved={() => { setFormOpen(false); void load(); }} />
+    </>
+  );
+}
+
+function ConfigDialog({ open, onClose, domainId, initial, onSaved }: { open: boolean; onClose: () => void; domainId: number | null; initial: GitConfig | null; onSaved: () => void }) {
+  const [repoUrl, setRepoUrl] = useState('');
+  const [branch, setBranch] = useState('main');
+  const [provider, setProvider] = useState('github');
+  const [autoDeploy, setAutoDeploy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setRepoUrl(initial?.repoUrl ?? '');
+      setBranch(initial?.branch ?? 'main');
+      setProvider(initial?.provider ?? 'github');
+      setAutoDeploy(initial?.autoDeployEnabled ?? false);
+      setErr(null);
+    }
+  }, [open, initial]);
+
+  const submit = async () => {
+    if (!domainId) return;
+    setBusy(true); setErr(null);
+    try {
+      await api.post(`/domains/${domainId}/git`, { repoUrl, branch, provider, autoDeployEnabled: autoDeploy });
+      onSaved();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      setErr(msg ?? 'Save failed');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} size="lg" title="Configure git repository"
+      foot={<>
+        {err && <span style={{ color: 'var(--danger)', fontSize: 12, marginRight: 'auto' }}>{err}</span>}
+        <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="btn primary" onClick={submit} disabled={busy || !repoUrl}>{busy ? 'Saving…' : 'Save'}</button>
+      </>}>
+      <div className="grid-2" style={{ gap: 12 }}>
+        <Field label="Repository URL" span={2}><input className="input mono" value={repoUrl} onChange={e => setRepoUrl(e.target.value)} placeholder="https://github.com/user/repo.git" autoFocus /></Field>
+        <Field label="Branch"><input className="input mono" value={branch} onChange={e => setBranch(e.target.value)} /></Field>
+        <Field label="Provider">
+          <select className="select" value={provider} onChange={e => setProvider(e.target.value)}>
+            <option value="github">GitHub</option>
+            <option value="gitlab">GitLab</option>
+            <option value="bitbucket">Bitbucket</option>
+            <option value="custom">Custom</option>
+          </select>
+        </Field>
+        <Field span={2}><Checkbox checked={autoDeploy} onChange={setAutoDeploy} label="Auto-deploy on push (webhook)" /></Field>
+      </div>
+    </Dialog>
   );
 }

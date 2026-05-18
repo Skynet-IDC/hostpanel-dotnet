@@ -17,6 +17,7 @@ public class NginxCreateVhostHandler : IAgentMethodHandler
         var phpVersion = GetString(parameters, "phpVersion") ?? "8.3";
         var sslCertPath = GetString(parameters, "sslCertPath");
         var sslKeyPath = GetString(parameters, "sslKeyPath");
+        var username = GetString(parameters, "username");
 
         if (string.IsNullOrEmpty(domain) || string.IsNullOrEmpty(docRoot))
             return new AgentResult { Success = false, Data = new() { ["error"] = "domain and docRoot are required" } };
@@ -41,8 +42,14 @@ public class NginxCreateVhostHandler : IAgentMethodHandler
 
         _logger.LogInformation("Creating Nginx vhost for {Domain} at {ConfigPath} (ssl={Ssl})", domain, configPath, sslEnabled);
 
-        // Create document root
+        // Create document root and set ownership so www-data can write (file manager, ACME, etc.)
         Directory.CreateDirectory(docRoot);
+        if (!string.IsNullOrEmpty(username))
+        {
+            await ProcessRunner.RunAsync("/bin/chown", ["-R", $"{username}:{username}", docRoot], cancellationToken);
+            await ProcessRunner.RunAsync("/bin/chmod", ["2775", docRoot], cancellationToken);
+            await ProcessRunner.RunAsync("/usr/sbin/usermod", ["-aG", username, "www-data"], cancellationToken);
+        }
 
         // Back up the existing config so we can roll back on `nginx -t` failure without losing
         // a previously-working vhost. (Without this, rewriting a working :80 vhost with a broken

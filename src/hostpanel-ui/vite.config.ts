@@ -10,6 +10,8 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:5000',
         changeOrigin: true,
+        // ws: true forwards the WebSocket upgrade for /api/v1/claude/terminal/{id}
+        ws: true,
       },
     },
   },

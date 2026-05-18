@@ -29,7 +29,10 @@ public class WordPressToolkit
             ?? throw new InvalidOperationException("Domain not found");
 
         var dbName = $"wp_{domain.Subscription.SystemUsername}_{domain.Name.Replace(".", "_")}";
-        var dbUser = $"wp_{domain.Subscription.SystemUsername}";
+        // Domain-unique user so each WP site has its own MySQL identity.
+        // Truncate to 32 chars (MySQL username limit).
+        var rawUser = $"wp_{domain.Name.Replace(".", "_").Replace("-", "_")}";
+        var dbUser = rawUser.Length > 32 ? rawUser[..32] : rawUser;
         var dbPass = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(18));
 
         _logger.LogInformation("Installing WordPress on {Domain}", domain.Name);

@@ -15,8 +15,21 @@ public class MsSqlProvisioner : IDbProvisioningService
 
     public MsSqlProvisioner(IConfiguration config, ILogger<MsSqlProvisioner> logger)
     {
-        _connectionString = config["Databases:MsSql:ConnectionString"]
-            ?? "Server=localhost;Trusted_Connection=True;TrustServerCertificate=True;";
+        var configured = config["Databases:MsSql:ConnectionString"];
+        if (!string.IsNullOrEmpty(configured))
+        {
+            _connectionString = configured;
+        }
+        else
+        {
+            // Fall back to DefaultConnection (installer writes SA creds there).
+            // Replace the database name with master for admin provisioning operations.
+            var def = config.GetConnectionString("DefaultConnection") ?? "";
+            _connectionString = System.Text.RegularExpressions.Regex.Replace(
+                def, @"(?i)Database=[^;]+;?", "Database=master;");
+        }
+        if (string.IsNullOrEmpty(_connectionString))
+            _connectionString = "Server=localhost;Database=master;TrustServerCertificate=True;";
         _logger = logger;
     }
 

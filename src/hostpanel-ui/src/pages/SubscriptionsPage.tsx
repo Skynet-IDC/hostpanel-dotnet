@@ -241,7 +241,7 @@ export function SubscriptionsPage() {
                 <span className="muted" style={{ fontSize: 12 }}>Bandwidth this period</span>
                 <span className="mono" style={{ fontSize: 12 }}>
                   {usageData.usage.bandwidthMb.toFixed(0)} / {usageData.limits.bandwidthMb} MB
-                  {!usageData.usage.bandwidthTracked && <Badge tone="warn" style={{ marginLeft: 8 }}>not tracked</Badge>}
+                  {!usageData.usage.bandwidthTracked && <span style={{ marginLeft: 8 }}><Badge tone="warn">not tracked</Badge></span>}
                 </span>
               </div>
               <Meter value={usageData.usage.bandwidthMb} total={usageData.limits.bandwidthMb || 1} hideText />

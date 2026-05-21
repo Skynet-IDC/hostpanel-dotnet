@@ -26,6 +26,24 @@ var builder = WebApplication.CreateBuilder(args);
 // Systemd readiness (sends READY=1 / STOPPING=1; no-op outside systemd)
 builder.Host.UseSystemd();
 
+// Sentry — only initializes when a DSN is configured (operator can disable by leaving blank)
+var sentryDsn = builder.Configuration["Sentry:Dsn"];
+if (!string.IsNullOrWhiteSpace(sentryDsn))
+{
+    builder.WebHost.UseSentry(o =>
+    {
+        o.Dsn = sentryDsn;
+        o.Environment = builder.Environment.EnvironmentName;
+        o.TracesSampleRate = builder.Environment.IsDevelopment() ? 1.0 : 0.1;
+        o.SendDefaultPii = false; // never ship request bodies / headers / user identifiers
+        o.MaxBreadcrumbs = 50;
+        o.Debug = builder.Environment.IsDevelopment();
+        o.AttachStacktrace = true;
+        // Filter noisy auth-redirect 401s — they're not bugs, they're auth flow
+        o.SetBeforeSend(e => e.Logger?.Contains("Microsoft.AspNetCore.Authentication") == true ? null : e);
+    });
+}
+
 // Serilog
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)

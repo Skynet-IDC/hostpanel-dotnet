@@ -35,6 +35,8 @@ SKIP_MSSQL=false
 SKIP_MAIL=false
 WITH_SDK=false
 SOURCE_DIR=""
+SENTRY_API_DSN=""
+SENTRY_UI_DSN=""
 # GitHub clone fallback: if neither --source nor --git-repo is given, default to the
 # operator's public repo. Override --git-repo or --git-ref for forks / branches.
 GIT_REPO="https://github.com/mgardner323/hostpanel.git"
@@ -51,7 +53,9 @@ while [[ $# -gt 0 ]]; do
         --source) SOURCE_DIR="$2"; shift 2;;
         --git-repo) GIT_REPO="$2"; shift 2;;
         --git-ref) GIT_REF="$2"; shift 2;;
-        -h|--help) echo "Usage: $0 [--sql-password PASSWORD] [--admin-email EMAIL] [--admin-password PASSWORD] [--skip-mssql] [--skip-mail] [--with-sdk] [--source /path/to/src | --git-repo URL --git-ref BRANCH]"; exit 0;;
+        --sentry-api-dsn) SENTRY_API_DSN="$2"; shift 2;;
+        --sentry-ui-dsn) SENTRY_UI_DSN="$2"; shift 2;;
+        -h|--help) echo "Usage: $0 [--sql-password PASSWORD] [--admin-email EMAIL] [--admin-password PASSWORD] [--skip-mssql] [--skip-mail] [--with-sdk] [--source /path/to/src | --git-repo URL --git-ref BRANCH] [--sentry-api-dsn DSN] [--sentry-ui-dsn DSN]"; exit 0;;
         *) log_error "Unknown option: $1"; exit 1;;
     esac
 done
@@ -503,6 +507,11 @@ deploy_hostpanel() {
             log_info "Building frontend..."
             (
                 cd "$SOURCE_DIR/hostpanel-ui"
+                # Bake Sentry DSN into the production bundle if operator supplied one.
+                # Empty .env.production means no Sentry; Sentry.init() in main.tsx no-ops.
+                cat > .env.production <<EOF
+VITE_SENTRY_DSN=${SENTRY_UI_DSN}
+EOF
                 npm ci --silent 2>/dev/null || npm install --silent
                 npm run build
             )
@@ -559,6 +568,9 @@ deploy_hostpanel() {
     "PostgreSql": {
       "Host": "localhost"
     }
+  },
+  "Sentry": {
+    "Dsn": "${SENTRY_API_DSN}"
   }
 }
 SETTINGS

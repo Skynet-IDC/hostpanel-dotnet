@@ -8,6 +8,8 @@ export function FirewallPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [deleteNumber, setDeleteNumber] = useState('');
+  const [toggleBusy, setToggleBusy] = useState(false);
 
   const load = async () => {
     setLoading(true); setErr(null);
@@ -20,6 +22,31 @@ export function FirewallPage() {
   };
   useEffect(() => { void load(); }, []);
 
+  const isActive = /Status:\s*active/i.test(rules);
+  const toggleFirewall = async () => {
+    if (!confirm(isActive ? 'Disable the firewall? All rules will be removed from the kernel.' : 'Enable the firewall? Active SSH session may drop if rules don\'t allow port 22.')) return;
+    setToggleBusy(true);
+    try {
+      await api.post(isActive ? '/firewall/disable' : '/firewall/enable', {});
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Toggle failed');
+    } finally { setToggleBusy(false); }
+  };
+
+  const deleteRule = async () => {
+    const n = parseInt(deleteNumber, 10);
+    if (!n || n <= 0) { setErr('Pick a positive rule number'); return; }
+    if (!confirm(`Delete firewall rule #${n}?`)) return;
+    try {
+      await api.delete(`/firewall/rules/${n}`);
+      setDeleteNumber('');
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Delete failed');
+    }
+  };
+
   return (
     <>
       <PageHead
@@ -27,6 +54,9 @@ export function FirewallPage() {
         sub="UFW rules. Ports are open or closed at the host level."
         actions={
           <>
+            <button className={`btn ${isActive ? 'danger' : 'primary'}`} onClick={toggleFirewall} disabled={toggleBusy} title={isActive ? 'Disable ufw' : 'Enable ufw'}>
+              <Icons.shield />{toggleBusy ? '…' : isActive ? 'Disable firewall' : 'Enable firewall'}
+            </button>
             <button className="btn" onClick={load}><Icons.refresh />Refresh</button>
             <button className="btn primary" onClick={() => setAddOpen(true)}><Icons.plus />Add rule</button>
           </>
@@ -35,7 +65,14 @@ export function FirewallPage() {
 
       {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
 
-      <Card title="Active rules" sub="ufw status verbose">
+      <Card title="Active rules" sub="ufw status verbose"
+        actions={
+          <div className="row gap-2" style={{ alignItems: 'center' }}>
+            <input className="input mono" style={{ width: 90 }} placeholder="rule #" value={deleteNumber}
+              onChange={e => setDeleteNumber(e.target.value.replace(/\D/g, ''))} />
+            <button className="btn danger" onClick={deleteRule} disabled={!deleteNumber}>Delete rule</button>
+          </div>
+        }>
         {loading ? <div className="muted">Loading…</div>
           : !rules.trim() ? <Empty icon="shield" title="No firewall rules" sub="Add a rule to allow or deny a port." />
           : (

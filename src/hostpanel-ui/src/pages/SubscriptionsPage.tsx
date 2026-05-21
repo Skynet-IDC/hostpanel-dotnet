@@ -1,11 +1,44 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/client';
-import { Avatar, Badge, Card, Checkbox, Dialog, Empty, Field, IconBtn, Meter, PageHead, StatusBadge, Tabs, initials } from '../components/ui/primitives';
+import { Avatar, Badge, Card, Checkbox, Dialog, Empty, Field, IconBtn, Meter, PageHead, Stat, StatusBadge, Tabs, initials } from '../components/ui/primitives';
 import { Icons } from '../components/ui/Icons';
 import { panelApi, type PanelCustomer, type PanelPlan, type PanelSubscription } from '../api/panel';
 
 type StatusFilter = 'all' | 'active' | 'suspended' | 'cancelled';
 type ConfirmAction = 'suspend' | 'resume' | 'cancel';
+
+interface UsageData {
+  subscriptionId: number;
+  servicePlan: string;
+  periodStart: string;
+  periodEnd: string;
+  usage: {
+    diskMb: number;
+    bandwidthMb: number;
+    bandwidthTracked: boolean;
+    domainCount: number;
+    mailboxCount: number;
+    aliasCount: number;
+    databaseCount: number;
+    ftpAccountCount: number;
+  };
+  limits: {
+    diskMb: number;
+    bandwidthMb: number;
+    maxDomains: number;
+    maxMailboxes: number;
+    maxDatabases: number;
+    maxFtpAccounts: number;
+  };
+  ratios: {
+    disk: number;
+    bandwidth: number;
+    domains: number;
+    mailboxes: number;
+    databases: number;
+    ftpAccounts: number;
+  };
+}
 
 export function SubscriptionsPage() {
   const [tab, setTab] = useState<StatusFilter>('all');
@@ -17,6 +50,9 @@ export function SubscriptionsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [confirming, setConfirming] = useState<{ sub: PanelSubscription; action: ConfirmAction } | null>(null);
   const [changePlan, setChangePlan] = useState<PanelSubscription | null>(null);
+  const [usageFor, setUsageFor] = useState<PanelSubscription | null>(null);
+  const [usageData, setUsageData] = useState<UsageData | null>(null);
+  const [usageBusy, setUsageBusy] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -36,6 +72,18 @@ export function SubscriptionsPage() {
   };
 
   useEffect(() => { void load(); }, []);
+
+  const openUsage = async (sub: PanelSubscription) => {
+    setUsageFor(sub);
+    setUsageBusy(true);
+    setUsageData(null);
+    try {
+      const r = await api.get<UsageData>(`/subscriptions/${sub.id}/usage`);
+      setUsageData(r.data);
+    } catch (e) {
+      console.error('usage load failed', e);
+    } finally { setUsageBusy(false); }
+  };
 
   const planById = (id: number) => plans.find(p => p.id === id);
   const customerById = (id: string) => customers.find(c => c.id === id);
@@ -137,6 +185,7 @@ export function SubscriptionsPage() {
                     <td><StatusBadge status={s.status} /></td>
                     <td>
                       <div className="row-actions">
+                        <IconBtn icon="trending" title="Usage details" onClick={() => void openUsage(s)} />
                         <IconBtn icon="edit" title="Change plan" onClick={() => setChangePlan(s)} />
                         {isSuspended
                           ? <IconBtn icon="play" title="Resume" onClick={() => setConfirming({ sub: s, action: 'resume' })} />
@@ -169,6 +218,43 @@ export function SubscriptionsPage() {
         onClose={() => setChangePlan(null)}
         onDone={() => { setChangePlan(null); void load(); }}
       />
+
+      <Dialog
+        open={usageFor !== null}
+        onClose={() => { setUsageFor(null); setUsageData(null); }}
+        title={`Usage — ${usageFor?.domains?.[0]?.name ?? `subscription #${usageFor?.id ?? ''}`}`}
+        sub={usageData ? `Plan: ${usageData.servicePlan} · ${new Date(usageData.periodStart).toLocaleDateString()} → ${new Date(usageData.periodEnd).toLocaleDateString()}` : 'Loading…'}
+        foot={<button className="btn ghost" onClick={() => { setUsageFor(null); setUsageData(null); }}>Close</button>}
+      >
+        {usageBusy && <div className="muted">Loading…</div>}
+        {usageData && (
+          <div className="col gap-4">
+            <div>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                <span className="muted" style={{ fontSize: 12 }}>Disk</span>
+                <span className="mono" style={{ fontSize: 12 }}>{usageData.usage.diskMb.toFixed(0)} / {usageData.limits.diskMb} MB</span>
+              </div>
+              <Meter value={usageData.usage.diskMb} total={usageData.limits.diskMb || 1} hideText />
+            </div>
+            <div>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+                <span className="muted" style={{ fontSize: 12 }}>Bandwidth this period</span>
+                <span className="mono" style={{ fontSize: 12 }}>
+                  {usageData.usage.bandwidthMb.toFixed(0)} / {usageData.limits.bandwidthMb} MB
+                  {!usageData.usage.bandwidthTracked && <Badge tone="warn" style={{ marginLeft: 8 }}>not tracked</Badge>}
+                </span>
+              </div>
+              <Meter value={usageData.usage.bandwidthMb} total={usageData.limits.bandwidthMb || 1} hideText />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+              <Stat label="Domains" value={`${usageData.usage.domainCount} / ${usageData.limits.maxDomains}`} />
+              <Stat label="Mailboxes" value={`${usageData.usage.mailboxCount} / ${usageData.limits.maxMailboxes}`} />
+              <Stat label="Databases" value={`${usageData.usage.databaseCount} / ${usageData.limits.maxDatabases}`} />
+              <Stat label="FTP accounts" value={`${usageData.usage.ftpAccountCount} / ${usageData.limits.maxFtpAccounts}`} />
+            </div>
+          </div>
+        )}
+      </Dialog>
     </>
   );
 }

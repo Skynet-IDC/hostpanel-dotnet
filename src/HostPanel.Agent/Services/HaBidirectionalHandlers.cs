@@ -226,3 +226,115 @@ public class HaDemoteToStandbyHandler : IAgentMethodHandler
     private static string? GetStr(Dictionary<string, object?> p, string k) =>
         p.TryGetValue(k, out var v) ? v?.ToString() ?? (v is JsonElement je ? je.GetString() : null) : null;
 }
+
+/// <summary>
+/// Phase 19c: report HA replication lag. Returns per-channel "how stale is the standby?"
+/// Doesn't need any params. Cheap — file mtimes + a single ps lookup.
+/// </summary>
+public class HaReplicationLagHandler : IAgentMethodHandler
+{
+    public string Method => AgentMethods.HaReplicationLag;
+
+    public Task<AgentResult> HandleAsync(Dictionary<string, object?> parameters, CancellationToken ct)
+    {
+        var data = new Dictionary<string, object?>();
+        var now = DateTime.UtcNow;
+
+        // 1. SQL diff backup age (mtime of /var/opt/mssql/data/hostpanel-ha.bak on primary or standby)
+        var sqlBak = new FileInfo("/var/opt/mssql/data/hostpanel-ha.bak");
+        if (sqlBak.Exists)
+        {
+            data["sqlBackupPath"] = sqlBak.FullName;
+            data["sqlBackupBytes"] = sqlBak.Length;
+            data["sqlBackupMtime"] = sqlBak.LastWriteTimeUtc.ToString("o");
+            data["sqlBackupAgeSeconds"] = (int)(now - sqlBak.LastWriteTimeUtc).TotalSeconds;
+        }
+        else
+        {
+            data["sqlBackupPath"] = null;
+            data["sqlBackupAgeSeconds"] = -1;
+        }
+
+        // 2. lsyncd: is it running, and how big is its event queue?
+        bool lsyncdActive = false;
+        int? lsyncdPid = null;
+        try
+        {
+            var ps = ProcessRunner.RunAsync("/bin/systemctl", ["is-active", "lsyncd"], ct).GetAwaiter().GetResult();
+            lsyncdActive = ps.ExitCode == 0 && ps.StdOut.Trim() == "active";
+            var pidProbe = ProcessRunner.RunAsync("/bin/systemctl", ["show", "-p", "MainPID", "--value", "lsyncd"], ct).GetAwaiter().GetResult();
+            if (pidProbe.ExitCode == 0 && int.TryParse(pidProbe.StdOut.Trim(), out var pid) && pid > 0) lsyncdPid = pid;
+        }
+        catch { /* lsyncd not installed on standby — that's fine */ }
+        data["lsyncdActive"] = lsyncdActive;
+        data["lsyncdPid"] = lsyncdPid;
+
+        // 3. lsyncd "last sync activity" — informational, NOT a lag metric.
+        //    lsyncd is inotify-driven so an idle system shows last event from days ago — that's healthy.
+        //    The real "files lag" is the in-flight delay: from inotify event to rsync completion (~1-3s typical).
+        //    We expose lastEvent for display, and an `filesInFlight` bool by checking for unfinished "Calling rsync".
+        bool filesInFlight = false;
+        if (lsyncdActive)
+        {
+            try
+            {
+                var jr = ProcessRunner.RunAsync("/bin/journalctl",
+                    ["-u", "lsyncd", "-n", "50", "--no-pager", "-o", "short-iso"], ct).GetAwaiter().GetResult();
+                if (jr.ExitCode == 0)
+                {
+                    var lines = jr.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    DateTime? lastEvent = null;
+                    int callingCount = 0, finishedCount = 0;
+                    foreach (var l in lines)
+                    {
+                        if (l.Contains("Calling rsync", StringComparison.OrdinalIgnoreCase)) callingCount++;
+                        if (l.Contains("Finished", StringComparison.OrdinalIgnoreCase)) finishedCount++;
+                        if (l.Contains("Calling rsync", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("Finished", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var sp = l.IndexOf(' ');
+                            if (sp > 0 && DateTime.TryParse(l[..sp], null,
+                                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                                out var t))
+                            {
+                                lastEvent = t;
+                            }
+                        }
+                    }
+                    filesInFlight = callingCount > finishedCount;
+                    if (lastEvent is DateTime le)
+                        data["filesLastSyncMtime"] = le.ToString("o");
+                }
+            }
+            catch { /* journalctl might be restricted */ }
+        }
+        data["filesInFlight"] = filesInFlight;
+        // Kept for back-compat; 0 if syncs are caught up.
+        data["filesBacklogSeconds"] = filesInFlight ? 30 : 0;
+
+        // 4. Watchdog state (standby-side check). State file under /var/lib/hostpanel-ha-watchdog/
+        var watchdogStateFile = new FileInfo("/var/lib/hostpanel-ha-watchdog/state");
+        if (watchdogStateFile.Exists)
+        {
+            try
+            {
+                var content = File.ReadAllText(watchdogStateFile.FullName).Trim();
+                data["watchdogState"] = content;
+                data["watchdogStateMtime"] = watchdogStateFile.LastWriteTimeUtc.ToString("o");
+                data["watchdogStaleSeconds"] = (int)(now - watchdogStateFile.LastWriteTimeUtc).TotalSeconds;
+            }
+            catch { /* maybe permission */ }
+        }
+        else
+        {
+            data["watchdogState"] = null;
+        }
+
+        // 5. Last failover log line for context
+        var failoverLog = new FileInfo("/var/log/hostpanel-ha-failover.log");
+        if (failoverLog.Exists)
+            data["lastFailoverLogMtime"] = failoverLog.LastWriteTimeUtc.ToString("o");
+
+        return Task.FromResult(new AgentResult { Success = true, Data = data });
+    }
+}

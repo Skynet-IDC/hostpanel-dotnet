@@ -8,9 +8,13 @@ interface Sub { id: number; name: string }
 
 const DB_TYPES = ['MSSQL', 'MySQL', 'MariaDB', 'PostgreSQL', 'SQLite'] as const;
 
+interface DbStatus { type: string; available: boolean; serviceActive?: boolean; version?: string }
+
 export function DatabasesPage() {
   const [databases, setDatabases] = useState<DbRow[]>([]);
   const [subs, setSubs] = useState<Sub[]>([]);
+  const [supportedTypes, setSupportedTypes] = useState<string[]>([]);
+  const [engineStatus, setEngineStatus] = useState<DbStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -30,6 +34,21 @@ export function DatabasesPage() {
 
   useEffect(() => { void load(); }, []);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const t = await api.get<string[] | { types?: string[] }>('/databases/types');
+        const list = Array.isArray(t.data) ? t.data : (t.data?.types ?? []);
+        setSupportedTypes(list);
+      } catch { /* fall through */ }
+      try {
+        const s = await api.get<DbStatus[] | { engines?: DbStatus[] }>('/databases/status');
+        const list = Array.isArray(s.data) ? s.data : (s.data?.engines ?? []);
+        setEngineStatus(list);
+      } catch { /* fall through */ }
+    })();
+  }, []);
+
   const remove = async (id: number, name: string) => {
     if (!confirm(`Delete database ${name}? Cannot be undone.`)) return;
     await api.delete(`/databases/${id}`);
@@ -47,6 +66,18 @@ export function DatabasesPage() {
       />
 
       {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
+
+      {(supportedTypes.length > 0 || engineStatus.length > 0) && (
+        <Card title="Supported engines" sub="Service status on this server" style={{ marginBottom: 12 }}>
+          <div className="row gap-2" style={{ flexWrap: 'wrap' }}>
+            {(engineStatus.length > 0 ? engineStatus : supportedTypes.map(t => ({ type: t, available: true } as DbStatus))).map(e => (
+              <Badge key={e.type} tone={e.serviceActive === false ? 'danger' : e.available === false ? 'warn' : 'success'} dot>
+                {e.type}{e.version ? ` ${e.version}` : ''}{e.serviceActive === false ? ' (down)' : ''}
+              </Badge>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <Card flush>
         {loading ? <div className="muted" style={{ padding: 16 }}>Loading…</div>

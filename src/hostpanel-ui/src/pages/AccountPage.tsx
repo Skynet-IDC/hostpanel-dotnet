@@ -23,11 +23,34 @@ export function AccountPage() {
   const [pwdErr, setPwdErr] = useState<string | null>(null);
   const [pwdSavedAt, setPwdSavedAt] = useState<number | null>(null);
 
+  // Personal branding form
+  const [brandLogoUrl, setBrandLogoUrl] = useState('');
+  const [brandPanelName, setBrandPanelName] = useState('');
+  const [brandPrimaryColor, setBrandPrimaryColor] = useState('');
+  const [brandLoginMessage, setBrandLoginMessage] = useState('');
+  const [brandBusy, setBrandBusy] = useState(false);
+  const [brandErr, setBrandErr] = useState<string | null>(null);
+  const [brandSavedAt, setBrandSavedAt] = useState<number | null>(null);
+  const [brandUploading, setBrandUploading] = useState(false);
+
   useEffect(() => {
     // Sync if Claude page changed the key
     const id = setInterval(() => setHasClaudeKey(!!localStorage.getItem('hp_claude_api_key')), 2000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      try {
+        const r = await api.get<{ logoUrl?: string; panelName?: string; primaryColor?: string; loginMessage?: string }>('/branding/customer/me');
+        setBrandLogoUrl(r.data.logoUrl ?? '');
+        setBrandPanelName(r.data.panelName ?? '');
+        setBrandPrimaryColor(r.data.primaryColor ?? '');
+        setBrandLoginMessage(r.data.loginMessage ?? '');
+      } catch { /* no override yet, leave defaults */ }
+    })();
+  }, [user]);
 
   if (!user) {
     return (
@@ -47,6 +70,54 @@ export function AccountPage() {
       const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
       setErr(msg ?? 'Save failed');
     } finally { setBusy(false); }
+  };
+
+  const saveBranding = async () => {
+    if (!user) return;
+    setBrandBusy(true); setBrandErr(null);
+    try {
+      await api.put(`/branding/customer/${user.id}`, {
+        logoUrl: brandLogoUrl || null,
+        panelName: brandPanelName || null,
+        primaryColor: brandPrimaryColor || null,
+        loginMessage: brandLoginMessage || null,
+      });
+      setBrandSavedAt(Date.now());
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      setBrandErr(msg ?? 'Save failed');
+    } finally { setBrandBusy(false); }
+  };
+
+  const clearBranding = async () => {
+    if (!user) return;
+    if (!confirm('Reset your personal branding to defaults?')) return;
+    setBrandBusy(true); setBrandErr(null);
+    try {
+      await api.delete(`/branding/customer/${user.id}`);
+      setBrandLogoUrl(''); setBrandPanelName(''); setBrandPrimaryColor(''); setBrandLoginMessage('');
+      setBrandSavedAt(Date.now());
+    } catch (e) {
+      setBrandErr(e instanceof Error ? e.message : 'Reset failed');
+    } finally { setBrandBusy(false); }
+  };
+
+  const uploadLogo = async (file: File) => {
+    if (!user) return;
+    if (file.size > 5 * 1024 * 1024) { setBrandErr('Logo must be under 5 MB'); return; }
+    setBrandUploading(true); setBrandErr(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await api.post<{ url: string }>(`/branding/customer/${user.id}/logo`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setBrandLogoUrl(r.data.url);
+      setBrandSavedAt(Date.now());
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      setBrandErr(msg ?? 'Upload failed');
+    } finally { setBrandUploading(false); }
   };
 
   const changePassword = async () => {
@@ -93,6 +164,42 @@ export function AccountPage() {
           </div>
         </Card>
       </div>
+
+      <Card title="Personal branding" sub="Override the panel's logo, name, colors, and login message just for your account."
+        actions={brandSavedAt && Date.now() - brandSavedAt < 4000 ? <span className="badge success"><span className="dot" />Saved</span> : null}
+        style={{ marginTop: 16 }}>
+        {brandErr && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{brandErr}</div>}
+        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: '1fr 1fr' }}>
+          <Field label="Logo URL" hint="Or upload a file below — 5 MB max.">
+            <input className="input mono" value={brandLogoUrl} onChange={e => setBrandLogoUrl(e.target.value)} placeholder="https://…" />
+          </Field>
+          <Field label="Upload logo">
+            <input type="file" accept="image/png,image/jpeg,image/svg+xml,image/webp" disabled={brandUploading}
+              onChange={e => { const f = e.target.files?.[0]; if (f) void uploadLogo(f); }} />
+            {brandUploading && <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Uploading…</div>}
+          </Field>
+          <Field label="Panel name override">
+            <input className="input" value={brandPanelName} onChange={e => setBrandPanelName(e.target.value)} placeholder="My Company Portal" />
+          </Field>
+          <Field label="Primary color">
+            <input className="input mono" value={brandPrimaryColor} onChange={e => setBrandPrimaryColor(e.target.value)} placeholder="#6366f1" />
+          </Field>
+          <Field label="Login message" hint="Shown on the sign-in page when someone logs in with your link.">
+            <textarea className="input" rows={2} value={brandLoginMessage} onChange={e => setBrandLoginMessage(e.target.value)} />
+          </Field>
+          {brandLogoUrl && (
+            <Field label="Preview">
+              <div style={{ padding: 8, border: '1px solid var(--border)', borderRadius: 6, background: '#0001' }}>
+                <img src={brandLogoUrl} alt="logo preview" style={{ maxHeight: 64, maxWidth: '100%' }} />
+              </div>
+            </Field>
+          )}
+        </div>
+        <div className="row gap-2" style={{ marginTop: 12 }}>
+          <button className="btn primary" onClick={saveBranding} disabled={brandBusy}>{brandBusy ? 'Saving…' : 'Save branding'}</button>
+          <button className="btn ghost" onClick={clearBranding} disabled={brandBusy}>Reset to defaults</button>
+        </div>
+      </Card>
 
       <div style={{ display: 'grid', gap: 16, gridTemplateColumns: '1fr 1fr', marginTop: 16 }}>
         <Link to="/2fa" style={{ textDecoration: 'none' }}>

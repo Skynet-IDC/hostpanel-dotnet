@@ -111,6 +111,7 @@ public static class AgentMethods
     public const string HaAddFloatingIp = "ha.addFloatingIp";
     public const string HaRemoveFloatingIp = "ha.removeFloatingIp";
     public const string HaSendGratuitousArp = "ha.sendGratuitousArp";
+    public const string HaReplicationLag = "ha.replicationLag";
 
     // Panel updates
     public const string PanelUpdate = "panel.update";
@@ -153,7 +154,7 @@ public static class AgentMethods
         AnalyticsVisitors, AnalyticsBandwidth, AnalyticsServerResources,
         AppsInstall,
         DomainSetHotlinkProtection, DomainSetIpDeny, DomainPasswordProtect,
-        HaConfigureStandby, HaPromoteToPrimary, HaSyncFrom, HaSyncDatabases, HaSyncEmail, HaStopSync, HaDemoteToStandby, HaAddFloatingIp, HaRemoveFloatingIp, HaSendGratuitousArp,
+        HaConfigureStandby, HaPromoteToPrimary, HaSyncFrom, HaSyncDatabases, HaSyncEmail, HaStopSync, HaDemoteToStandby, HaAddFloatingIp, HaRemoveFloatingIp, HaSendGratuitousArp, HaReplicationLag,
         PanelUpdate, PanelRollback,
         AppConfigure, AppBuild, AppRestart, AppWriteEnv,
         MailProvision,

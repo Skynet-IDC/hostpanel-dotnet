@@ -81,6 +81,32 @@ export function FilesPage() {
     }
   };
 
+  const mkdir = async () => {
+    if (!domainId) return;
+    const name = prompt('New folder name:');
+    if (!name) return;
+    try {
+      await api.post(`/domains/${domainId}/files/mkdir`, { path: currentPath, name });
+      await load();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      alert(msg ?? 'Mkdir failed');
+    }
+  };
+
+  const rename = async (entry: FileEntry) => {
+    if (!domainId) return;
+    const newName = prompt(`Rename "${entry.name}" to:`, entry.name);
+    if (!newName || newName === entry.name) return;
+    try {
+      await api.post(`/domains/${domainId}/files/rename`, { oldPath: entry.path, newName });
+      await load();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      alert(msg ?? 'Rename failed');
+    }
+  };
+
   return (
     <>
       <PageHead
@@ -99,6 +125,7 @@ export function FilesPage() {
               </select>
             )}
             <button className="btn" onClick={goUp} disabled={currentPath === '/'}><Icons.chevL />Up</button>
+            <button className="btn" onClick={mkdir}><Icons.plus />New folder</button>
             <label className="btn primary" style={{ cursor: 'pointer' }}>
               <Icons.upload />Upload
               <input type="file" style={{ display: 'none' }} onChange={upload} />
@@ -134,6 +161,7 @@ export function FilesPage() {
                       <td className="muted mono" style={{ fontSize: 11.5 }}>{new Date(entry.modifiedAt).toLocaleString()}</td>
                       <td onClick={e => e.stopPropagation()}>
                         <div className="row-actions">
+                          <IconBtn icon="edit" title="Rename" onClick={() => rename(entry)} />
                           <IconBtn icon="trash" danger title="Delete" onClick={() => remove(entry)} />
                         </div>
                       </td>

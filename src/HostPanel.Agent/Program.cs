@@ -99,6 +99,7 @@ builder.Services.AddSingleton<IAgentMethodHandler, HaDemoteToStandbyHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, HaAddFloatingIpHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, HaRemoveFloatingIpHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, HaSendGratuitousArpHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, HaReplicationLagHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, PanelFullUpdateHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, PanelFullRollbackHandler>();
 

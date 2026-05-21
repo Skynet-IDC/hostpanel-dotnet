@@ -50,6 +50,12 @@ export function EmailPage() {
     void load();
   };
 
+  const removeAlias = async (id: number, src: string) => {
+    if (!confirm(`Delete alias ${src}?`)) return;
+    await api.delete(`/aliases/${id}`);
+    void load();
+  };
+
   return (
     <>
       <PageHead
@@ -105,12 +111,13 @@ export function EmailPage() {
             : aliases.length === 0 ? <Empty icon="mail" title="No aliases" sub="Forward an address to another mailbox or external email." />
             : (
               <table className="tbl">
-                <thead><tr><th>Source</th><th>Destination</th></tr></thead>
+                <thead><tr><th>Source</th><th>Destination</th><th style={{ textAlign: 'right' }} /></tr></thead>
                 <tbody>
                   {aliases.map(a => (
                     <tr key={a.id}>
                       <td className="mono">{a.source}</td>
                       <td className="mono muted">{a.destination}</td>
+                      <td><div className="row-actions"><IconBtn icon="trash" danger title="Delete alias" onClick={() => removeAlias(a.id, a.source)} /></div></td>
                     </tr>
                   ))}
                 </tbody>

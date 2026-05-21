@@ -88,6 +88,21 @@ export function ServerUpdatesPage() {
   const [loading, setLoading] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [osInfo, setOsInfo] = useState<{ os?: string; kernel?: string; uptimeSeconds?: number; hostname?: string } | null>(null);
+  const [history, setHistory] = useState<Array<{ timestamp?: string; type?: string; packages?: number; status?: string }>>([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const o = await api.get<{ os?: string; kernel?: string; uptimeSeconds?: number; hostname?: string }>('/server/updates/os-info');
+        setOsInfo(o.data);
+      } catch { /* endpoint may not be reachable */ }
+      try {
+        const h = await api.get<Array<{ timestamp?: string; type?: string; packages?: number; status?: string }>>('/server/updates/history');
+        setHistory(Array.isArray(h.data) ? h.data : []);
+      } catch { /* empty */ }
+    })();
+  }, []);
 
   const check = async () => {
     setLoading(true); setErr(null);
@@ -132,12 +147,38 @@ export function ServerUpdatesPage() {
 
       {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
 
-      <div className="stats" style={{ marginBottom: 16, gridTemplateColumns: 'repeat(2, 1fr)' }}>
+      <div className="stats" style={{ marginBottom: 16, gridTemplateColumns: 'repeat(4, 1fr)' }}>
         <Stat label="Available updates" icon="refresh" value={String(count)} foot={<span className="muted">{checked ? 'last checked just now' : 'click Check'}</span>} />
         <Stat label="Status" icon={count === 0 && checked ? 'check2' : 'info'} value={count === 0 && checked ? 'Up to date' : count > 0 ? 'Updates pending' : 'Unknown'} />
+        <Stat label="OS" icon="cpu" value={osInfo?.os ?? 'Unknown'} foot={<span className="muted mono" style={{ fontSize: 11 }}>{osInfo?.kernel ?? ''}</span>} />
+        <Stat label="Uptime" icon="clock"
+          value={osInfo?.uptimeSeconds
+            ? osInfo.uptimeSeconds > 86400
+              ? `${Math.floor(osInfo.uptimeSeconds / 86400)}d ${Math.floor((osInfo.uptimeSeconds % 86400) / 3600)}h`
+              : `${Math.floor(osInfo.uptimeSeconds / 3600)}h ${Math.floor((osInfo.uptimeSeconds % 3600) / 60)}m`
+            : '—'}
+          foot={<span className="muted mono" style={{ fontSize: 11 }}>{osInfo?.hostname ?? ''}</span>} />
       </div>
 
       <div style={{ marginBottom: 16 }}><PanelUpdateCard /></div>
+
+      {history.length > 0 && (
+        <Card title="Update history" sub={`${history.length} run${history.length === 1 ? '' : 's'} on record`} flush style={{ marginBottom: 16 }}>
+          <table className="tbl">
+            <thead><tr><th>When</th><th>Type</th><th>Packages</th><th>Status</th></tr></thead>
+            <tbody>
+              {history.slice(0, 10).map((h, i) => (
+                <tr key={i}>
+                  <td className="mono muted" style={{ fontSize: 11.5 }}>{h.timestamp ? new Date(h.timestamp).toLocaleString() : '—'}</td>
+                  <td>{h.type ?? '—'}</td>
+                  <td className="mono">{h.packages ?? '—'}</td>
+                  <td>{h.status ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
 
       <Card title="Available packages" sub={count === 0 ? 'No updates available' : `${count} package${count === 1 ? '' : 's'}`} flush>
         {!checked ? (

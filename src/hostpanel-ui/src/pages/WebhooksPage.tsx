@@ -23,6 +23,19 @@ const FALLBACK_EVENTS = [
   'mailbox.created', 'mailbox.deleted',
 ];
 
+interface Delivery {
+  id: number;
+  event: string;
+  url?: string;
+  statusCode?: number;
+  responseTimeMs?: number;
+  attempts?: number;
+  succeeded?: boolean;
+  payload?: string;
+  response?: string;
+  createdAt: string;
+}
+
 export function WebhooksPage() {
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [availableEvents, setAvailableEvents] = useState<string[]>(FALLBACK_EVENTS);
@@ -30,6 +43,21 @@ export function WebhooksPage() {
   const [err, setErr] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Webhook | null>(null);
+  const [deliveriesFor, setDeliveriesFor] = useState<Webhook | null>(null);
+  const [deliveries, setDeliveries] = useState<Delivery[]>([]);
+  const [deliveriesBusy, setDeliveriesBusy] = useState(false);
+
+  const openDeliveries = async (w: Webhook) => {
+    setDeliveriesFor(w);
+    setDeliveries([]);
+    setDeliveriesBusy(true);
+    try {
+      const r = await api.get<Delivery[]>(`/webhooks/${w.id}/deliveries`);
+      setDeliveries(Array.isArray(r.data) ? r.data : []);
+    } catch (e) {
+      console.error('deliveries load failed', e);
+    } finally { setDeliveriesBusy(false); }
+  };
 
   const load = async () => {
     setErr(null);
@@ -133,6 +161,7 @@ export function WebhooksPage() {
                     </td>
                     <td>
                       <div className="row-actions">
+                        <IconBtn icon="list" title="Delivery history" onClick={() => void openDeliveries(w)} />
                         <IconBtn icon="zap" title="Send test event" onClick={() => test(w.id)} />
                         {w.failureCount !== undefined && w.failureCount > 0 && (
                           <IconBtn icon="refresh" title="Reset failure counter" onClick={() => resetCounter(w.id)} />
@@ -150,6 +179,36 @@ export function WebhooksPage() {
 
       <Form open={createOpen} availableEvents={availableEvents} onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); void load(); }} />
       <Form open={!!editing} availableEvents={availableEvents} initial={editing ?? undefined} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void load(); }} />
+
+      <Dialog
+        open={deliveriesFor !== null}
+        onClose={() => { setDeliveriesFor(null); setDeliveries([]); }}
+        size="lg"
+        title={`Deliveries — ${deliveriesFor?.url ?? ''}`}
+        sub={`${deliveries.length} record${deliveries.length === 1 ? '' : 's'} · HMAC-signed`}
+        foot={<button className="btn ghost" onClick={() => { setDeliveriesFor(null); setDeliveries([]); }}>Close</button>}
+      >
+        {deliveriesBusy ? <div className="muted">Loading…</div>
+          : deliveries.length === 0 ? <Empty icon="webhook" title="No deliveries yet" sub="The endpoint has not received any events." />
+          : (
+            <table className="tbl">
+              <thead><tr><th>When</th><th>Event</th><th>Status</th><th>Latency</th><th>Attempts</th></tr></thead>
+              <tbody>
+                {deliveries.slice(0, 50).map(d => (
+                  <tr key={d.id}>
+                    <td className="mono muted" style={{ fontSize: 11.5 }}>{new Date(d.createdAt).toLocaleString()}</td>
+                    <td className="mono">{d.event}</td>
+                    <td>
+                      <Badge tone={d.succeeded ? 'success' : 'danger'} dot>{d.statusCode ?? (d.succeeded ? 'OK' : 'fail')}</Badge>
+                    </td>
+                    <td className="mono muted">{d.responseTimeMs ? `${d.responseTimeMs} ms` : '—'}</td>
+                    <td className="mono">{d.attempts ?? 1}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </Dialog>
     </>
   );
 }

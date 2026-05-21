@@ -845,11 +845,23 @@ namespace HostPanel.Infrastructure.Data.Migrations
                     b.Property<int>("HealthCheckIntervalSeconds")
                         .HasColumnType("int");
 
+                    b.Property<DateTime?>("LastReplicationCheckAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("LastReplicationLagSeconds")
+                        .HasColumnType("int");
+
                     b.Property<DateTime?>("LastSyncAt")
                         .HasColumnType("datetime2");
 
                     b.Property<string>("LastSyncLog")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("LastTestResult")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime?>("LastTestedAt")
+                        .HasColumnType("datetime2");
 
                     b.Property<string>("Role")
                         .IsRequired()

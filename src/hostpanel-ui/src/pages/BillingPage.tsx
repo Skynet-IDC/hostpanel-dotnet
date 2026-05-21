@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/client';
-import { Card, Empty, IconBtn, PageHead, Stat, StatusBadge, Tabs } from '../components/ui/primitives';
+import { Card, Dialog, Empty, Field, IconBtn, PageHead, Stat, StatusBadge, Tabs } from '../components/ui/primitives';
 import { Icons } from '../components/ui/Icons';
 
 interface Invoice {
@@ -26,17 +26,40 @@ export function BillingPage() {
   const [tab, setTab] = useState<TabId>('all');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [genOpen, setGenOpen] = useState(false);
+  const [genSubId, setGenSubId] = useState<number | ''>('');
+  const [genAmount, setGenAmount] = useState('');
+  const [genBusy, setGenBusy] = useState(false);
+  const [genErr, setGenErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [inv, sub] = await Promise.all([api.get<Invoice[]>('/billing/invoices'), api.get<{ id: number; name: string }[]>('/subscriptions')]);
-        setInvoices(inv.data); setSubs(sub.data);
-      } catch (e) {
-        setErr(e instanceof Error ? e.message : 'Load failed');
-      } finally { setLoading(false); }
-    })();
-  }, []);
+  const reload = async () => {
+    try {
+      const [inv, sub] = await Promise.all([api.get<Invoice[]>('/billing/invoices'), api.get<{ id: number; name: string }[]>('/subscriptions')]);
+      setInvoices(inv.data); setSubs(sub.data);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Load failed');
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { void reload(); }, []);
+
+  const generateInvoice = async () => {
+    if (!genSubId) { setGenErr('Pick a subscription'); return; }
+    setGenBusy(true); setGenErr(null);
+    try {
+      const body: Record<string, unknown> = { subscriptionId: genSubId };
+      if (genAmount && !isNaN(Number(genAmount))) body.amount = Number(genAmount);
+      await api.post('/billing/invoices/generate', body);
+      setGenOpen(false);
+      setGenAmount('');
+      setGenSubId('');
+      void reload();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e
+        ? (e as { response?: { data?: { message?: string } } }).response?.data?.message
+        : null;
+      setGenErr(msg ?? (e instanceof Error ? e.message : 'Generate failed'));
+    } finally { setGenBusy(false); }
+  };
 
   const filtered = useMemo(() => {
     let list = invoices;
@@ -61,10 +84,15 @@ export function BillingPage() {
         title="Billing"
         sub="Invoices, payments, and overdue tracking"
         actions={
-          <select className="select" value={filterSub} onChange={e => setFilterSub(e.target.value ? Number(e.target.value) : '')} style={{ maxWidth: 240 }}>
-            <option value="">All subscriptions</option>
-            {subs.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <>
+            <select className="select" value={filterSub} onChange={e => setFilterSub(e.target.value ? Number(e.target.value) : '')} style={{ maxWidth: 240 }}>
+              <option value="">All subscriptions</option>
+              {subs.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <button className="btn primary" onClick={() => { setGenSubId(filterSub || ''); setGenErr(null); setGenOpen(true); }}>
+              <Icons.plus />Generate invoice
+            </button>
+          </>
         }
       />
 
@@ -107,6 +135,34 @@ export function BillingPage() {
             </table>
           )}
       </Card>
+
+      <Dialog
+        open={genOpen}
+        onClose={() => setGenOpen(false)}
+        title="Generate invoice now"
+        sub="Bypasses the daily billing cycle — useful for signup invoices, ad-hoc charges, or pro-rations."
+        foot={
+          <>
+            {genErr && <span style={{ color: 'var(--danger)', fontSize: 12, marginRight: 'auto' }}>{genErr}</span>}
+            <button className="btn ghost" onClick={() => setGenOpen(false)} disabled={genBusy}>Cancel</button>
+            <button className="btn primary" onClick={generateInvoice} disabled={genBusy || !genSubId}>
+              {genBusy ? 'Generating…' : 'Generate'}
+            </button>
+          </>
+        }
+      >
+        <div className="col gap-3">
+          <Field label="Subscription">
+            <select className="select" value={genSubId} onChange={e => setGenSubId(e.target.value ? Number(e.target.value) : '')}>
+              <option value="">— pick one —</option>
+              {subs.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Amount (optional)" hint="Leave blank to use the plan's price per period.">
+            <input className="input mono" type="number" step="0.01" value={genAmount} onChange={e => setGenAmount(e.target.value)} placeholder="e.g. 49.00" />
+          </Field>
+        </div>
+      </Dialog>
     </>
   );
 }

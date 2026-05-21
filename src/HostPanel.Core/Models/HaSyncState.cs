@@ -38,4 +38,10 @@ public class HaSyncState : BaseEntity
 
     // Per-domain strategy config
     public string? FailoverDomains { get; set; }            // JSON array of domain IDs to failover (null = all)
+
+    // Phase 19c: HA self-test + lag reporting
+    public DateTime? LastTestedAt { get; set; }             // Last successful probe-only test
+    public string? LastTestResult { get; set; }             // Short JSON blob of last test verdict
+    public int? LastReplicationLagSeconds { get; set; }     // Newest known SQL+files lag (max of channels)
+    public DateTime? LastReplicationCheckAt { get; set; }   // When we last refreshed LastReplicationLagSeconds
 }

@@ -485,6 +485,13 @@ deploy_hostpanel() {
             exit 1
         fi
 
+        # Repo layout: HostPanel.slnx lives under src/, not at the clone root.
+        # Accept either layout — if .slnx is under src/, transparently descend.
+        if [[ ! -f "$SOURCE_DIR/HostPanel.slnx" && -f "$SOURCE_DIR/src/HostPanel.slnx" ]]; then
+            log_info "Detected repo layout — using $SOURCE_DIR/src as source root"
+            SOURCE_DIR="$SOURCE_DIR/src"
+        fi
+
         if [[ ! -f "$SOURCE_DIR/HostPanel.slnx" ]]; then
             log_error "Source directory does not contain HostPanel.slnx: $SOURCE_DIR"
             exit 1

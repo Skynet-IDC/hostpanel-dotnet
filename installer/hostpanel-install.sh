@@ -244,6 +244,12 @@ install_mssql() {
             /opt/mssql/bin/mssql-conf -n setup accept-eula
     fi
     systemctl enable mssql-server
+    # Clear systemd's start-rate-limit. On a fresh install, apt-get's postinst
+    # auto-starts mssql-server BEFORE mssql-conf accepts the EULA, so it crashes
+    # 3 times in a row and systemd marks the unit as failed with "Start request
+    # repeated too quickly". Our `start` then is silently ignored. Reset the
+    # counter to let the now-configured server come up cleanly.
+    systemctl reset-failed mssql-server 2>/dev/null || true
     systemctl start mssql-server
 
     # Verify it actually came up (Type=simple lies — systemctl returns 0 before crash)

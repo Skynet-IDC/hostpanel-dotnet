@@ -97,7 +97,30 @@ preflight_checks() {
 
 # Install base dependencies
 install_base() {
-    # Wait up to 5 minutes for dpkg lock (unattended-upgrades runs on first boot)
+    # Stop + temporarily mask unattended-upgrades so it doesn't race with our apt
+    # invocations. The 5-minute DPkg::Lock::Timeout below catches direct apt calls
+    # but THIRD-PARTY postinst scripts (e.g. packages-microsoft-prod) shell out to
+    # apt-get without inheriting our apt.conf.d settings and just fail. Disabling
+    # the unattended-upgrades unit entirely prevents the race.
+    log_info "Disabling unattended-upgrades for install duration..."
+    systemctl stop unattended-upgrades.service 2>/dev/null || true
+    systemctl mask unattended-upgrades.service 2>/dev/null || true
+    # Kill any in-flight unattended-upgrade processes (they hold dpkg lock for ~5min on first boot)
+    for i in 1 2 3 4 5 6; do
+        if pgrep -f unattended-upgrade >/dev/null; then
+            log_info "Waiting for in-flight unattended-upgrade to finish (try $i/6)..."
+            pkill -TERM -f unattended-upgrade 2>/dev/null || true
+            sleep 10
+        else
+            break
+        fi
+    done
+    # Force-release the dpkg lock if a killed unattended-upgrade left it stale.
+    if [ -f /var/lib/dpkg/lock-frontend ]; then
+        fuser -k /var/lib/dpkg/lock-frontend 2>/dev/null || true
+    fi
+
+    # Wait up to 5 minutes for dpkg lock (belt-and-suspenders even after the disable above)
     echo 'DPkg::Lock::Timeout "300";' > /etc/apt/apt.conf.d/99-hostpanel-lock-wait
 
     # Force IPv4 for apt — some Proxmox/cloud-init setups deliver an IPv6 default route via RA
@@ -859,6 +882,10 @@ main() {
     configure_sudoers
     configure_firewall
     start_hostpanel
+
+    # Re-enable unattended-upgrades (disabled at start to avoid dpkg-lock races).
+    systemctl unmask unattended-upgrades.service 2>/dev/null || true
+    systemctl enable --now unattended-upgrades.service 2>/dev/null || true
 
     local PANEL_IP
     PANEL_IP=$(hostname -I | awk '{print $1}')

@@ -226,9 +226,23 @@ install_mssql() {
         log_warn "Save this password! It will not be shown again."
     fi
 
-    ACCEPT_EULA=Y MSSQL_SA_PASSWORD="$SQL_PASSWORD" MSSQL_PID="Express" \
-        MSSQL_LCID=1033 MSSQL_COLLATION="SQL_Latin1_General_CP1_CI_AS" \
-        /opt/mssql/bin/mssql-conf -n setup accept-eula
+    # Idempotency: if mssql-conf has already been run (e.g. on a re-run after a
+    # failed install), mssql-server is already started and `mssql-conf setup`
+    # refuses with "An instance of SQL Server is running. Please stop the SQL
+    # Server service" — silently busy-looping. Detect prior config and skip.
+    if [[ -f /var/opt/mssql/mssql.conf ]] && grep -q "^\[sqlagent\]" /var/opt/mssql/mssql.conf 2>/dev/null; then
+        log_info "mssql-conf already configured (re-run detected) — skipping setup"
+    else
+        # If mssql-server is running but unconfigured, stop it so mssql-conf can take over.
+        if systemctl is-active --quiet mssql-server; then
+            log_info "mssql-server is running pre-config — stopping for first-time setup"
+            systemctl stop mssql-server
+            sleep 2
+        fi
+        ACCEPT_EULA=Y MSSQL_SA_PASSWORD="$SQL_PASSWORD" MSSQL_PID="Express" \
+            MSSQL_LCID=1033 MSSQL_COLLATION="SQL_Latin1_General_CP1_CI_AS" \
+            /opt/mssql/bin/mssql-conf -n setup accept-eula
+    fi
     systemctl enable mssql-server
     systemctl start mssql-server
 

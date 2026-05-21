@@ -105,20 +105,27 @@ install_base() {
     log_info "Disabling unattended-upgrades for install duration..."
     systemctl stop unattended-upgrades.service 2>/dev/null || true
     systemctl mask unattended-upgrades.service 2>/dev/null || true
-    # Kill any in-flight unattended-upgrade processes (they hold dpkg lock for ~5min on first boot)
-    for i in 1 2 3 4 5 6; do
-        if pgrep -f unattended-upgrade >/dev/null; then
-            log_info "Waiting for in-flight unattended-upgrade to finish (try $i/6)..."
-            pkill -TERM -f unattended-upgrade 2>/dev/null || true
-            sleep 10
-        else
-            break
-        fi
+    # Wait for in-flight unattended-upgrade to finish NATURALLY — killing it leaves dpkg in
+    # 'interrupted' state and the next apt-get bails with "dpkg was interrupted, you must
+    # manually run 'sudo dpkg --configure -a' to correct the problem".
+    # Give it up to 10 minutes to drain. If still running after that, force-kill and clean up.
+    local UPK=0
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if ! pgrep -f unattended-upgrade >/dev/null; then break; fi
+        log_info "Waiting for in-flight unattended-upgrade to finish (${i}0s/200s)..."
+        sleep 30
+        UPK=$i
     done
-    # Force-release the dpkg lock if a killed unattended-upgrade left it stale.
-    if [ -f /var/lib/dpkg/lock-frontend ]; then
+    if pgrep -f unattended-upgrade >/dev/null; then
+        log_warn "unattended-upgrade still running after 10 min — force-killing"
+        pkill -9 -f unattended-upgrade 2>/dev/null || true
+        sleep 2
         fuser -k /var/lib/dpkg/lock-frontend 2>/dev/null || true
+        sleep 2
     fi
+    # Whether we waited or killed, always reconcile dpkg state to recover from any half-done txn.
+    log_info "Reconciling dpkg state (dpkg --configure -a)..."
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 | tail -5 || true
 
     # Wait up to 5 minutes for dpkg lock (belt-and-suspenders even after the disable above)
     echo 'DPkg::Lock::Timeout "300";' > /etc/apt/apt.conf.d/99-hostpanel-lock-wait

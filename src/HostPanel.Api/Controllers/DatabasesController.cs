@@ -78,9 +78,15 @@ public class DatabasesController : ControllerBase
         if (sub.Databases.Count >= sub.ServicePlan.MaxDatabases)
             return BadRequest(new { message = "Database limit reached for this plan" });
 
-        // Generate safe names
-        var dbName = $"hp_{sub.SystemUsername}_{request.Name}";
-        var dbUser = $"hp_{sub.SystemUsername}_{request.Name}_u";
+        // Generate safe names. MySQL caps user at 32 chars (5.7+) and DB at 64 chars; PostgreSQL
+        // caps both at 63; MSSQL is lenient. Truncate proactively to the strictest limit (32) for
+        // the username so cross-engine portability works. Append "_u" inside the budget.
+        var rawDbName = $"hp_{sub.SystemUsername}_{request.Name}";
+        var dbName = rawDbName.Length > 60 ? rawDbName[..60] : rawDbName;
+        var rawDbUser = $"hp_{sub.SystemUsername}_{request.Name}_u";
+        var dbUser = rawDbUser.Length > 32
+            ? $"hp_{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(rawDbUser)))[..24].ToLowerInvariant()}_u"
+            : rawDbUser;
         var dbPassword = GeneratePassword();
 
         try

@@ -218,3 +218,69 @@ public class Fail2BanUnbanHandler : IAgentMethodHandler
     private static string? GetStr(Dictionary<string, object?> p, string k) =>
         p.TryGetValue(k, out var v) ? v?.ToString() ?? (v is JsonElement je ? je.GetString() : null) : null;
 }
+
+// Move an infected file out of /var/www and into /var/quarantine, preserving the
+// original path inside a per-file directory so the operator can find what came
+// from where. Read-only quarantine perms (root:root 600) so nothing serves it.
+public class SecurityQuarantineFileHandler : IAgentMethodHandler
+{
+    public string Method => AgentMethods.SecurityQuarantineFile;
+
+    public async Task<AgentResult> HandleAsync(Dictionary<string, object?> parameters, CancellationToken ct)
+    {
+        var source = GetStr(parameters, "path");
+        if (string.IsNullOrWhiteSpace(source))
+            return new AgentResult { Success = false, Data = new() { ["error"] = "path required" } };
+        // Refuse to quarantine outside the webroot — the only thing this handler is
+        // for. Defends against a confused or malicious caller asking to move /etc/passwd.
+        if (!source.StartsWith("/var/www/", StringComparison.Ordinal))
+            return new AgentResult { Success = false, Data = new() { ["error"] = "path must be under /var/www/" } };
+        if (!File.Exists(source))
+            return new AgentResult { Success = false, Data = new() { ["error"] = "source file does not exist" } };
+
+        var quarantineDir = "/var/quarantine";
+        Directory.CreateDirectory(quarantineDir);
+
+        // Preserve original path under a timestamp+hash dir so multiple quarantines
+        // of the same filename never clobber each other.
+        var stamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
+        var safeOrigPath = source.TrimStart('/').Replace('/', '_');
+        var destDir = Path.Combine(quarantineDir, $"{stamp}.{Guid.NewGuid():N}");
+        Directory.CreateDirectory(destDir);
+        var dest = Path.Combine(destDir, safeOrigPath);
+
+        try
+        {
+            File.Move(source, dest);
+            File.SetUnixFileMode(dest, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            // Write a sibling marker so the operator can trace it back later.
+            await File.WriteAllTextAsync(
+                Path.Combine(destDir, "manifest.json"),
+                JsonSerializer.Serialize(new
+                {
+                    originalPath = source,
+                    quarantinedAt = DateTime.UtcNow.ToString("o"),
+                }),
+                ct
+            );
+
+            return new AgentResult
+            {
+                Success = true,
+                Data = new()
+                {
+                    ["originalPath"] = source,
+                    ["quarantinePath"] = dest,
+                }
+            };
+        }
+        catch (Exception ex)
+        {
+            return new AgentResult { Success = false, Data = new() { ["error"] = ex.Message } };
+        }
+    }
+
+    private static string? GetStr(Dictionary<string, object?> p, string k) =>
+        p.TryGetValue(k, out var v) ? v?.ToString() ?? (v is JsonElement je ? je.GetString() : null) : null;
+}

@@ -86,6 +86,7 @@ public static class AgentMethods
     public const string SecurityClamScanAll = "security.clamScanAll";
     public const string SecurityFail2BanStatus = "security.fail2banStatus";
     public const string SecurityFail2BanUnban = "security.fail2banUnban";
+    public const string SecurityQuarantineFile = "security.quarantineFile";
 
     // Analytics
     public const string AnalyticsVisitors = "analytics.visitors";
@@ -150,7 +151,7 @@ public static class AgentMethods
         DockerCreate, DockerStart, DockerStop, DockerRestart, DockerRemove,
         GitDeploy,
         FtpCreateAccount, FtpDeleteAccount,
-        SecurityClamScan, SecurityClamScanAll, SecurityFail2BanStatus, SecurityFail2BanUnban,
+        SecurityClamScan, SecurityClamScanAll, SecurityFail2BanStatus, SecurityFail2BanUnban, SecurityQuarantineFile,
         AnalyticsVisitors, AnalyticsBandwidth, AnalyticsServerResources,
         AppsInstall,
         DomainSetHotlinkProtection, DomainSetIpDeny, DomainPasswordProtect,

@@ -84,6 +84,7 @@ builder.Services.AddSingleton<IAgentMethodHandler, ClamScanHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, ClamScanAllHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, Fail2BanStatusHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, Fail2BanUnbanHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, SecurityQuarantineFileHandler>();
 
 // Analytics, Apps, Domain settings
 builder.Services.AddSingleton<IAgentMethodHandler, AnalyticsVisitorsHandler>();

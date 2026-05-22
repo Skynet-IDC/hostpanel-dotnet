@@ -159,8 +159,8 @@ function PlanForm({ open, onClose, plan, onSaved }: { open: boolean; onClose: ()
         maxEmailAccounts: s.maxEmailAccounts,
         maxDatabases: s.maxDatabases,
       };
-      if (plan) await api.put(`/plans/${plan.id}`, body);
-      else await api.post('/plans', body);
+      if (plan) await api.put(`/serviceplans/${plan.id}`, body);
+      else await api.post('/serviceplans', body);
       onSaved();
     } catch (e) {
       const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;

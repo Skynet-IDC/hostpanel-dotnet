@@ -89,7 +89,7 @@ export function SetupWizard() {
           fromAddress: state.smtpFromAddress.trim() || state.supportEmail,
         });
       } else if (current.id === 'plan') {
-        await api.post('/plans', {
+        await api.post('/serviceplans', {
           name: state.planName.trim(),
           pricePerPeriod: state.planPrice,
           diskQuotaMb: state.planDiskGb * 1024,

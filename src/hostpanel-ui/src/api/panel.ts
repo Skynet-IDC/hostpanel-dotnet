@@ -58,7 +58,12 @@ export interface PanelAuditEntry {
 export const panelApi = {
   serverStats: () => api.get<ServiceStats>('/server/stats').then(r => r.data),
   listSubscriptions: () => api.get<PanelSubscription[]>('/subscriptions').then(r => r.data),
-  listPlans: () => api.get<PanelPlan[]>('/plans').then(r => r.data),
+  listPlans: () => api.get<PanelPlan[]>('/serviceplans').then(r => r.data),
   listCustomers: () => api.get<PanelCustomer[]>('/customers').then(r => r.data),
-  recentAudit: (limit = 8) => api.get<PanelAuditEntry[]>('/audit', { params: { limit } }).then(r => r.data),
+  // /audit was paginated in a later phase — returns { items, totalCount, page, ... }
+  // not a bare array. Unwrap to keep the existing callers (which expect [])
+  // working without touching every consumer. If the backend reverts to a bare
+  // array, this still handles it.
+  recentAudit: (limit = 8) => api.get<{ items?: PanelAuditEntry[] } | PanelAuditEntry[]>('/audit', { params: { limit } })
+    .then(r => Array.isArray(r.data) ? r.data : (r.data?.items ?? [])),
 };

@@ -45,14 +45,21 @@ public class BillingController : ControllerBase
         if (role == UserRole.Reseller.ToString() && sub.User.ParentUserId != callerId && sub.UserId != callerId)
             return Forbid();
 
-        var amount = req.Amount ?? sub.ServicePlan.PricePerPeriod;
+        // F1 amount resolution: explicit request value wins; otherwise pull the plan's
+        // price for the subscription's actual BillingPeriod (handles per-cycle overrides
+        // and linear-fallback in ServicePlan.GetPriceFor).
+        var amount = req.Amount ?? sub.ServicePlan.GetPriceFor(sub.BillingPeriod);
         var currency = req.Currency ?? "USD";
         var dueDate = req.DueDate ?? DateTime.UtcNow.AddDays(14);
+
+        // F1 provider routing: per-invoice override > subscription preference > Stripe default.
+        // Honors the answers from the AskUserQuestion locking on 2026-05-22.
+        var provider = req.Provider ?? sub.PreferredPaymentProvider;
 
         var invoice = new HostPanel.Core.Models.Invoice
         {
             SubscriptionId = sub.Id,
-            Provider = PaymentProvider.Stripe,  // default — webhook reconciliation updates on payment
+            Provider = provider,
             Amount = amount,
             Currency = currency,
             Status = InvoiceStatus.Sent,
@@ -61,13 +68,44 @@ public class BillingController : ControllerBase
         _db.Invoices.Add(invoice);
         await _db.SaveChangesAsync();
 
-        _logger.LogInformation("Manual invoice generated: id={Id} sub={SubId} amount={Amount} {Currency} due={Due}",
-            invoice.Id, sub.Id, amount, currency, dueDate);
+        // Create the actual invoice in Stripe/PayPal so the customer gets a hosted
+        // payment link instead of just a record in our DB. Failures here don't roll back
+        // the local invoice — the operator can retry via a re-send endpoint later.
+        string? paymentLink = null;
+        try
+        {
+            // ProviderName is a string ("Stripe"/"PayPal") — match against the enum.
+            var billingProvider = _providers.FirstOrDefault(p =>
+                string.Equals(p.ProviderName, provider.ToString(), StringComparison.OrdinalIgnoreCase));
+            if (billingProvider is not null)
+            {
+                paymentLink = await billingProvider.CreateInvoiceAsync(invoice, sub.User);
+                if (!string.IsNullOrEmpty(paymentLink))
+                {
+                    invoice.ProviderInvoiceId = paymentLink;
+                    await _db.SaveChangesAsync();
+                }
+            }
+            else
+            {
+                _logger.LogWarning("No registered IPaymentProvider matches enum {Provider}", provider);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Provider invoice create failed (local invoice persisted): provider={Provider} invoice={Id}",
+                provider, invoice.Id);
+        }
+
+        _logger.LogInformation("Manual invoice generated: id={Id} sub={SubId} amount={Amount} {Currency} provider={Provider} due={Due}",
+            invoice.Id, sub.Id, amount, currency, provider, dueDate);
 
         return CreatedAtAction(nameof(ListInvoices), new { subscriptionId = sub.Id }, new
         {
             invoice.Id, invoice.SubscriptionId, invoice.Provider, invoice.Amount, invoice.Currency,
             invoice.Status, invoice.DueDate, invoice.CreatedAt,
+            providerInvoiceId = invoice.ProviderInvoiceId,
+            paymentLink,
             downloadUrl = $"/api/v1/billing/invoices/{invoice.Id}/pdf",
         });
     }
@@ -180,4 +218,4 @@ public class BillingController : ControllerBase
     }
 }
 
-public record GenerateInvoiceRequest(int SubscriptionId, decimal? Amount = null, string? Currency = null, DateTime? DueDate = null);
+public record GenerateInvoiceRequest(int SubscriptionId, decimal? Amount = null, string? Currency = null, DateTime? DueDate = null, PaymentProvider? Provider = null);

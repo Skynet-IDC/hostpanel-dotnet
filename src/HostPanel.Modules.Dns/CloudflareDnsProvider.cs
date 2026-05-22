@@ -110,4 +110,31 @@ public class CloudflareDnsProvider : IDnsProvider
 
         return records;
     }
+
+    /// <summary>
+    /// F2: enumerate the zones the configured token can see. Used by the import UI so the
+    /// operator picks a target zone without having to copy IDs from the Cloudflare dashboard.
+    /// </summary>
+    public async Task<List<CloudflareZoneSummary>> ListZonesAsync(CancellationToken cancellationToken = default)
+    {
+        var response = await _http.GetAsync("zones?per_page=50", cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        var zones = new List<CloudflareZoneSummary>();
+
+        foreach (var z in json.GetProperty("result").EnumerateArray())
+        {
+            zones.Add(new CloudflareZoneSummary(
+                z.GetProperty("id").GetString() ?? "",
+                z.GetProperty("name").GetString() ?? "",
+                z.TryGetProperty("status", out var s) ? s.GetString() ?? "" : "",
+                z.TryGetProperty("plan", out var p) && p.TryGetProperty("name", out var pn) ? pn.GetString() ?? "" : ""
+            ));
+        }
+
+        return zones;
+    }
 }
+
+public record CloudflareZoneSummary(string Id, string Name, string Status, string Plan);

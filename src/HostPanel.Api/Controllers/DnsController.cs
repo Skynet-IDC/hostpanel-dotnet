@@ -178,6 +178,189 @@ public class DnsController : ControllerBase
         await _db.SaveChangesAsync();
         return NoContent();
     }
+
+    /// <summary>
+    /// F2: list zones available on the configured Cloudflare account so the operator can
+    /// pick one to import. Names + IDs only; record-level fetch is a separate call.
+    /// </summary>
+    [HttpGet("dns/cf/zones")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
+    public async Task<IActionResult> ListCloudflareZones(CancellationToken ct)
+    {
+        var cf = _dnsFactory.GetProvider(DnsProviderType.Cloudflare) as CloudflareDnsProvider;
+        if (cf is null)
+            return StatusCode(503, new { message = "Cloudflare provider not configured" });
+
+        var zones = await cf.ListZonesAsync(ct);
+        return Ok(zones);
+    }
+
+    /// <summary>
+    /// F2: pull records from a Cloudflare zone into HostPanel. Upserts a DnsZone for the
+    /// domain (with Provider=Cloudflare + ProviderZoneId), then reconciles records:
+    /// existing rows matched by ProviderRecordId get updated, new CF records get inserted.
+    /// Local-only records (no ProviderRecordId match) are preserved by default; pass
+    /// removeLocalOnly=true to clean them out.
+    /// </summary>
+    [HttpPost("domains/{domainId}/dns/cf/import")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
+    public async Task<IActionResult> ImportFromCloudflare(int domainId, [FromBody] CfImportRequest request, CancellationToken ct)
+    {
+        if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
+
+        var domain = await _db.Domains.FirstOrDefaultAsync(d => d.Id == domainId, ct);
+        if (domain is null) return NotFound(new { message = "Domain not found" });
+
+        var cf = _dnsFactory.GetProvider(DnsProviderType.Cloudflare) as CloudflareDnsProvider;
+        if (cf is null) return StatusCode(503, new { message = "Cloudflare provider not configured" });
+
+        // Upsert zone — same domain may be PowerDns today; we flip it to Cloudflare here.
+        var zone = await _db.DnsZones.Include(z => z.Records).FirstOrDefaultAsync(z => z.DomainId == domainId, ct);
+        if (zone is null)
+        {
+            zone = new DnsZone
+            {
+                DomainId = domainId,
+                Name = domain.Name,
+                Provider = DnsProviderType.Cloudflare,
+                ProviderZoneId = request.ZoneId,
+            };
+            _db.DnsZones.Add(zone);
+            await _db.SaveChangesAsync(ct);
+        }
+        else
+        {
+            zone.Provider = DnsProviderType.Cloudflare;
+            zone.ProviderZoneId = request.ZoneId;
+        }
+
+        var cfRecords = await cf.ListRecordsAsync(request.ZoneId, ct);
+
+        var existingByProviderId = zone.Records
+            .Where(r => !string.IsNullOrEmpty(r.ProviderRecordId))
+            .ToDictionary(r => r.ProviderRecordId!, r => r);
+
+        var imported = 0;
+        var updated = 0;
+        foreach (var cfr in cfRecords)
+        {
+            if (existingByProviderId.TryGetValue(cfr.RecordId, out var existing))
+            {
+                if (existing.Type != cfr.Type || existing.Name != cfr.Name ||
+                    existing.Value != cfr.Value || existing.Ttl != cfr.Ttl || existing.Priority != cfr.Priority)
+                {
+                    existing.Type = cfr.Type;
+                    existing.Name = cfr.Name;
+                    existing.Value = cfr.Value;
+                    existing.Ttl = cfr.Ttl;
+                    existing.Priority = cfr.Priority;
+                    updated++;
+                }
+            }
+            else
+            {
+                _db.DnsRecords.Add(new DnsRecord
+                {
+                    DnsZoneId = zone.Id,
+                    Type = cfr.Type,
+                    Name = cfr.Name,
+                    Value = cfr.Value,
+                    Ttl = cfr.Ttl,
+                    Priority = cfr.Priority,
+                    ProviderRecordId = cfr.RecordId,
+                });
+                imported++;
+            }
+        }
+
+        // Optional: prune local-only records (no matching ProviderRecordId in CF response).
+        var pruned = 0;
+        if (request.RemoveLocalOnly)
+        {
+            var cfIds = cfRecords.Select(r => r.RecordId).ToHashSet();
+            foreach (var local in zone.Records.ToList())
+            {
+                if (!string.IsNullOrEmpty(local.ProviderRecordId) && !cfIds.Contains(local.ProviderRecordId))
+                {
+                    _db.DnsRecords.Remove(local);
+                    pruned++;
+                }
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { imported, updated, pruned, totalInCloudflare = cfRecords.Count });
+    }
+
+    /// <summary>
+    /// F2: push HostPanel's local DnsRecords back to Cloudflare. Records without a
+    /// ProviderRecordId are created; mismatches get updated. Records orphaned in CF (have
+    /// ProviderRecordId but no local row) are left alone unless removeRemoteOrphans=true.
+    /// </summary>
+    [HttpPost("domains/{domainId}/dns/cf/export")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin,Reseller")]
+    public async Task<IActionResult> ExportToCloudflare(int domainId, [FromBody] CfExportRequest request, CancellationToken ct)
+    {
+        if (!await _auth.CanAccessDomainAsync(User, domainId)) return Forbid();
+
+        var zone = await _db.DnsZones.Include(z => z.Records).FirstOrDefaultAsync(z => z.DomainId == domainId, ct);
+        if (zone is null) return NotFound(new { message = "No DNS zone for this domain" });
+        if (string.IsNullOrEmpty(zone.ProviderZoneId))
+            return BadRequest(new { message = "Zone has no ProviderZoneId — import first to associate with a Cloudflare zone" });
+
+        var cf = _dnsFactory.GetProvider(DnsProviderType.Cloudflare) as CloudflareDnsProvider;
+        if (cf is null) return StatusCode(503, new { message = "Cloudflare provider not configured" });
+
+        var created = 0;
+        var updated = 0;
+        var errors = new List<string>();
+
+        foreach (var local in zone.Records)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(local.ProviderRecordId))
+                {
+                    var created_ = await cf.AddRecordAsync(zone.ProviderZoneId, local.Type, local.Name, local.Value, local.Ttl, local.Priority, ct);
+                    local.ProviderRecordId = created_.RecordId;
+                    created++;
+                }
+                else
+                {
+                    await cf.UpdateRecordAsync(zone.ProviderZoneId, local.ProviderRecordId, local.Value, local.Ttl, local.Priority, ct);
+                    updated++;
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{local.Type} {local.Name}: {ex.Message}");
+            }
+        }
+
+        // Optional: delete CF records that have no local counterpart.
+        var deletedRemote = 0;
+        if (request.RemoveRemoteOrphans)
+        {
+            var remote = await cf.ListRecordsAsync(zone.ProviderZoneId, ct);
+            var localIds = zone.Records.Where(r => !string.IsNullOrEmpty(r.ProviderRecordId))
+                .Select(r => r.ProviderRecordId!).ToHashSet();
+            foreach (var r in remote)
+            {
+                if (!localIds.Contains(r.RecordId))
+                {
+                    try
+                    {
+                        await cf.DeleteRecordAsync(zone.ProviderZoneId, r.RecordId, ct);
+                        deletedRemote++;
+                    }
+                    catch (Exception ex) { errors.Add($"delete {r.Type} {r.Name}: {ex.Message}"); }
+                }
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { created, updated, deletedRemote, errors });
+    }
 }
 
 public record AddDnsRecordRequest(
@@ -190,3 +373,6 @@ public record AddDnsRecordRequest(
 );
 
 public record UpdateDnsRecordRequest(string Value, int Ttl = 3600, int? Priority = null);
+
+public record CfImportRequest(string ZoneId, bool RemoveLocalOnly = false);
+public record CfExportRequest(bool RemoveRemoteOrphans = false);

@@ -29,6 +29,11 @@ export interface PanelPlan {
   id: number;
   name: string;
   pricePerPeriod: number;
+  // F1: per-cycle override prices. Null/undefined = fall back to linear math.
+  priceMonthly?: number | null;
+  priceQuarterly?: number | null;
+  priceSemiAnnual?: number | null;
+  priceAnnual?: number | null;
   diskQuotaMb: number;
   bandwidthLimitMb: number;
   maxDomains: number;

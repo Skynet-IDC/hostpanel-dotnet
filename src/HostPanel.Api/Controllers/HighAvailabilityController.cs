@@ -357,6 +357,82 @@ public class HighAvailabilityController : ControllerBase
     }
 
     /// <summary>
+    /// F4: kick the standby's pull-sync immediately instead of waiting for the next interval.
+    /// Useful after a big push of changes (bulk customer import, mass plan edit, recovery from
+    /// a partial outage) or as a sanity check before triggering failover. Read-only on the
+    /// primary; the standby does all the work via the same `ha.syncFrom` agent path that
+    /// FailbackAsync uses.
+    /// </summary>
+    [HttpPost("force-sync/{serverId:int}")]
+    public async Task<IActionResult> ForceSync(int serverId)
+    {
+        var standby = await _db.Set<Server>().FindAsync(serverId);
+        if (standby is null) return NotFound(new { message = "Server not found" });
+        if (standby.IsLocal)
+            return BadRequest(new { message = "Cannot force-sync the local server onto itself" });
+
+        var standbyState = await _db.Set<HaSyncState>().FirstOrDefaultAsync(s => s.ServerId == serverId);
+        if (standbyState is null)
+            return BadRequest(new { message = "No HA sync state — configure failover first" });
+
+        var primary = await _db.Set<Server>().FirstOrDefaultAsync(s => s.IsLocal);
+        if (primary is null)
+            return StatusCode(500, new { message = "Local primary server not found" });
+
+        var agent = _agentFactory.GetAgent(standby);
+
+        var fileResult = await agent.ExecuteAsync(new AgentRequest
+        {
+            Method = AgentMethods.HaSyncFrom,
+            Params = new Dictionary<string, object?>
+            {
+                ["sourceIp"] = primary.IpAddress,
+                ["syncFiles"] = standbyState.SyncFiles,
+                ["syncExcludes"] = standbyState.SyncExcludes
+            }
+        });
+
+        var dbResult = standbyState.SyncDatabases
+            ? await agent.ExecuteAsync(new AgentRequest
+              {
+                  Method = AgentMethods.HaSyncDatabases,
+                  Params = new Dictionary<string, object?> { ["sourceIp"] = primary.IpAddress }
+              })
+            : null;
+
+        var emailResult = standbyState.SyncEmail
+            ? await agent.ExecuteAsync(new AgentRequest
+              {
+                  Method = AgentMethods.HaSyncEmail,
+                  Params = new Dictionary<string, object?> { ["sourceIp"] = primary.IpAddress }
+              })
+            : null;
+
+        // Stamp completion + a short log line so the dashboard's "Last sync" row reflects this
+        // forced run, not just whichever scheduled run happened earlier.
+        var partialFailures = new List<string>();
+        if (!fileResult.IsSuccess) partialFailures.Add($"files: {fileResult.Error?.Message}");
+        if (dbResult is { IsSuccess: false }) partialFailures.Add($"db: {dbResult.Error?.Message}");
+        if (emailResult is { IsSuccess: false }) partialFailures.Add($"email: {emailResult.Error?.Message}");
+
+        standbyState.LastSyncAt = DateTime.UtcNow;
+        standbyState.LastSyncLog = partialFailures.Count > 0
+            ? $"Forced sync had partial failures: {string.Join("; ", partialFailures)}"
+            : "Forced sync OK";
+        await _db.SaveChangesAsync();
+
+        return Ok(new
+        {
+            success = fileResult.IsSuccess,
+            partialFailures,
+            syncedFiles = standbyState.SyncFiles,
+            syncedDatabases = standbyState.SyncDatabases,
+            syncedEmail = standbyState.SyncEmail,
+            lastSyncAt = standbyState.LastSyncAt
+        });
+    }
+
+    /// <summary>
     /// Phase 19c: probe-only test of HA readiness. Does NOT flip DNS or touch traffic.
     /// Checks: standby agent healthy + standby nginx responding + replication lag within threshold.
     /// Records a "HA tested OK at {timestamp}" badge on the standby's HaSyncState row.

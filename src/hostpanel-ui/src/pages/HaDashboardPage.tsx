@@ -136,6 +136,9 @@ export function HaDashboardPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [lbBusy, setLbBusy] = useState(false);
+  // F4: track per-row force-sync state so two rows can't fire at once and the spinner sticks.
+  const [syncingServerId, setSyncingServerId] = useState<number | null>(null);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const load = async () => {
     setErr(null);
@@ -230,6 +233,26 @@ export function HaDashboardPage() {
     if (!confirm('FAILOVER: Promote this server to primary?')) return;
     await api.post('/ha/failover', { promoteServerId: id }); void load();
   };
+  // F4: kick the standby's pull-sync immediately instead of waiting for the next interval.
+  // Useful before failover or after a bulk push to the primary.
+  const forceSync = async (id: number) => {
+    setSyncingServerId(id); setSyncMsg(null);
+    try {
+      const r = await api.post<{ success: boolean; partialFailures: string[]; lastSyncAt: string }>(`/ha/force-sync/${id}`);
+      setSyncMsg(r.data.partialFailures.length > 0
+        ? `Sync had partial failures: ${r.data.partialFailures.join('; ')}`
+        : 'Forced sync OK');
+      void load();
+      void loadLag();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e
+        ? (e as { response?: { data?: { message?: string } } }).response?.data?.message
+        : null;
+      setSyncMsg(msg ?? (e instanceof Error ? e.message : 'Force-sync failed'));
+    } finally {
+      setSyncingServerId(null);
+    }
+  };
   const failback = async (id: number) => {
     if (!confirm('FAILBACK: Sync changes back and restore as primary?')) return;
     await api.post('/ha/failback', { recoveredServerId: id }); void load();
@@ -278,6 +301,12 @@ export function HaDashboardPage() {
       />
 
       {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
+      {syncMsg && (
+        <div className={`alert ${syncMsg.startsWith('Forced sync OK') ? 'success' : 'warn'}`} style={{ marginBottom: 12 }}>
+          <Icons.refresh />{syncMsg}
+          <button className="btn ghost sm" style={{ marginLeft: 'auto' }} onClick={() => setSyncMsg(null)}>×</button>
+        </div>
+      )}
 
       {/* HA vs Backups education panel — explains the distinction */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
@@ -347,6 +376,10 @@ export function HaDashboardPage() {
                     {s.role === 'standby' && (
                       <>
                         <button className="btn" onClick={() => runTest(s.serverId)} disabled={testing} title="Probe-only — no DNS or traffic touched"><Icons.shield />Test</button>
+                        <button className="btn" onClick={() => forceSync(s.serverId)} disabled={syncingServerId !== null}
+                          title="Force pull-sync from primary now (files, databases, email per config)">
+                          <Icons.refresh />{syncingServerId === s.serverId ? 'Syncing…' : 'Replicate'}
+                        </button>
                         <button className="btn" onClick={() => toggleLoadBalancer(s)} disabled={lbBusy}
                           title={s.cloudflareUseLoadBalancer ? 'Tear down the Cloudflare Load Balancer' : 'Front this cluster with a Cloudflare Load Balancer (Premium HA)'}>
                           <Icons.globe />{s.cloudflareUseLoadBalancer ? 'Disable CF LB' : 'Enable CF LB'}

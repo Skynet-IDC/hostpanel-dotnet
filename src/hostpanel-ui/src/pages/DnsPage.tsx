@@ -7,6 +7,8 @@ interface DnsRecord { id: number; type: string; name: string; value: string; ttl
 
 const DNS_TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV'] as const;
 
+interface CfZone { id: string; name: string; status: string; plan: string }
+
 export function DnsPage() {
   const [domains, setDomains] = useState<{ id: number; name: string }[]>([]);
   const [domainId, setDomainId] = useState<number | null>(null);
@@ -14,6 +16,13 @@ export function DnsPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  // F2: CF import/export state — kept local so picking a CF zone doesn't pollute the
+  // page's record state until the operator hits Import.
+  const [cfOpen, setCfOpen] = useState<'import' | 'export' | null>(null);
+  const [cfZones, setCfZones] = useState<CfZone[]>([]);
+  const [cfZoneId, setCfZoneId] = useState<string>('');
+  const [cfBusy, setCfBusy] = useState(false);
+  const [cfMsg, setCfMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.get<{ id: number; name: string }[]>('/domains')
@@ -40,6 +49,51 @@ export function DnsPage() {
     void load();
   };
 
+  // F2: open import dialog — fetches the CF zone list lazily so the page isn't
+  // gated on a CF call that may take a couple seconds.
+  const openImport = async () => {
+    setCfOpen('import'); setCfMsg(null); setCfBusy(true);
+    try {
+      const r = await api.get<CfZone[]>('/dns/cf/zones');
+      setCfZones(r.data);
+      // Auto-pick the zone whose name matches the selected domain — common case.
+      const selectedDomain = domains.find(d => d.id === domainId)?.name;
+      const match = selectedDomain ? r.data.find(z => z.name === selectedDomain) : null;
+      setCfZoneId(match?.id ?? (r.data[0]?.id ?? ''));
+    } catch (e) {
+      setCfMsg(e instanceof Error ? e.message : 'Could not load Cloudflare zones');
+    } finally { setCfBusy(false); }
+  };
+  const doImport = async (removeLocalOnly: boolean) => {
+    if (!domainId || !cfZoneId) return;
+    setCfBusy(true); setCfMsg(null);
+    try {
+      const r = await api.post<{ imported: number; updated: number; pruned: number; totalInCloudflare: number }>(
+        `/domains/${domainId}/dns/cf/import`, { zoneId: cfZoneId, removeLocalOnly });
+      setCfMsg(`Imported ${r.data.imported} · updated ${r.data.updated} · pruned ${r.data.pruned} (of ${r.data.totalInCloudflare} in CF)`);
+      void load();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e
+        ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      setCfMsg(msg ?? (e instanceof Error ? e.message : 'Import failed'));
+    } finally { setCfBusy(false); }
+  };
+  const doExport = async (removeRemoteOrphans: boolean) => {
+    if (!domainId) return;
+    setCfBusy(true); setCfMsg(null);
+    try {
+      const r = await api.post<{ created: number; updated: number; deletedRemote: number; errors: string[] }>(
+        `/domains/${domainId}/dns/cf/export`, { removeRemoteOrphans });
+      const tail = r.data.errors.length > 0 ? ` · ${r.data.errors.length} errors` : '';
+      setCfMsg(`Created ${r.data.created} · updated ${r.data.updated} · deleted ${r.data.deletedRemote} from CF${tail}`);
+      void load();
+    } catch (e) {
+      const msg = e && typeof e === 'object' && 'response' in e
+        ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      setCfMsg(msg ?? (e instanceof Error ? e.message : 'Export failed'));
+    } finally { setCfBusy(false); }
+  };
+
   const selected = domains.find(d => d.id === domainId);
 
   return (
@@ -54,6 +108,8 @@ export function DnsPage() {
                 {domains.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
               </select>
             )}
+            <button className="btn" onClick={openImport} disabled={!domainId}><Icons.download />Import from CF</button>
+            <button className="btn" onClick={() => setCfOpen('export')} disabled={!domainId}><Icons.upload />Export to CF</button>
             <button className="btn primary" onClick={() => setCreateOpen(true)} disabled={!domainId}><Icons.plus />Add record</button>
           </>
         }
@@ -84,6 +140,48 @@ export function DnsPage() {
       </Card>
 
       <CreateDialog open={createOpen} onClose={() => setCreateOpen(false)} domainId={domainId} onSaved={() => { setCreateOpen(false); void load(); }} />
+
+      <Dialog open={cfOpen !== null} onClose={() => { setCfOpen(null); setCfMsg(null); }} size="lg"
+        title={cfOpen === 'import' ? 'Import DNS from Cloudflare' : 'Export DNS to Cloudflare'}
+        foot={<>
+          {cfMsg && <span style={{ fontSize: 12, marginRight: 'auto', color: cfMsg.startsWith('Imported') || cfMsg.startsWith('Created') ? 'var(--success)' : 'var(--danger)' }}>{cfMsg}</span>}
+          <button className="btn ghost" onClick={() => { setCfOpen(null); setCfMsg(null); }} disabled={cfBusy}>Close</button>
+          {cfOpen === 'import' && <>
+            <button className="btn" onClick={() => doImport(false)} disabled={cfBusy || !cfZoneId}>{cfBusy ? 'Importing…' : 'Import'}</button>
+            <button className="btn danger" onClick={() => doImport(true)} disabled={cfBusy || !cfZoneId} title="Also delete local records that no longer exist in Cloudflare">
+              {cfBusy ? 'Importing…' : 'Import + prune local'}
+            </button>
+          </>}
+          {cfOpen === 'export' && <>
+            <button className="btn" onClick={() => doExport(false)} disabled={cfBusy}>{cfBusy ? 'Exporting…' : 'Export'}</button>
+            <button className="btn danger" onClick={() => doExport(true)} disabled={cfBusy} title="Also delete CF records that no longer exist locally">
+              {cfBusy ? 'Exporting…' : 'Export + delete CF orphans'}
+            </button>
+          </>}
+        </>}>
+        {cfOpen === 'import' && (
+          <div className="col gap-3">
+            <Field label="Cloudflare zone" hint="Pick the zone to pull DNS records from. Records get linked by Cloudflare's record ID so re-imports reconcile cleanly.">
+              <select className="select mono" value={cfZoneId} onChange={e => setCfZoneId(e.target.value)} disabled={cfBusy || cfZones.length === 0}>
+                {cfZones.length === 0 && <option value="">— Loading… —</option>}
+                {cfZones.map(z => <option key={z.id} value={z.id}>{z.name} ({z.status}, {z.plan})</option>)}
+              </select>
+            </Field>
+            <div className="muted" style={{ fontSize: 12 }}>
+              Import upserts records by Cloudflare's record ID. Local-only records are preserved unless you use "Import + prune local".
+            </div>
+          </div>
+        )}
+        {cfOpen === 'export' && (
+          <div className="col gap-2">
+            <div className="muted" style={{ fontSize: 12 }}>
+              Pushes the {records.length} local record{records.length === 1 ? '' : 's'} for this domain into the linked Cloudflare zone.
+              Records without a Cloudflare ID get created; existing ones get updated in place.
+              "Export + delete CF orphans" also removes any CF records that don't exist locally — use only when HostPanel is the source of truth.
+            </div>
+          </div>
+        )}
+      </Dialog>
     </>
   );
 }

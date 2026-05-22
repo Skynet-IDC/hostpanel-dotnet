@@ -114,6 +114,13 @@ function PlanLine({ label }: { label: string }) {
 interface PlanFormState {
   name: string;
   pricePerPeriod: number;
+  // F1: per-cycle override prices. Blank/null means "fall back to linear math against
+  // pricePerPeriod for this cycle". Storing as string in the form state so the operator
+  // can type partial values (e.g. "27") without it auto-coercing to 0.
+  priceMonthly: string;
+  priceQuarterly: string;
+  priceSemiAnnual: string;
+  priceAnnual: string;
   diskGb: number;
   bandwidthGb: number;
   maxDomains: number;
@@ -125,6 +132,10 @@ function defaultsFrom(p?: PanelPlan): PlanFormState {
   return {
     name: p?.name ?? '',
     pricePerPeriod: p?.pricePerPeriod ?? 0,
+    priceMonthly: p?.priceMonthly !== undefined && p?.priceMonthly !== null ? String(p.priceMonthly) : '',
+    priceQuarterly: p?.priceQuarterly !== undefined && p?.priceQuarterly !== null ? String(p.priceQuarterly) : '',
+    priceSemiAnnual: p?.priceSemiAnnual !== undefined && p?.priceSemiAnnual !== null ? String(p.priceSemiAnnual) : '',
+    priceAnnual: p?.priceAnnual !== undefined && p?.priceAnnual !== null ? String(p.priceAnnual) : '',
     diskGb: p ? Math.round(p.diskQuotaMb / 1024) : 5,
     bandwidthGb: p ? Math.round(p.bandwidthLimitMb / 1024) : 50,
     maxDomains: p?.maxDomains ?? 1,
@@ -150,9 +161,16 @@ function PlanForm({ open, onClose, plan, onSaved }: { open: boolean; onClose: ()
     setBusy(true);
     setErr(null);
     try {
+      // F1: send per-cycle overrides only when filled in. Empty strings become null so
+      // the backend keeps the linear-fallback behavior on a freshly created plan.
+      const toNum = (v: string): number | null => v.trim() === '' ? null : Number(v);
       const body = {
         name: s.name.trim(),
         pricePerPeriod: s.pricePerPeriod,
+        priceMonthly: toNum(s.priceMonthly),
+        priceQuarterly: toNum(s.priceQuarterly),
+        priceSemiAnnual: toNum(s.priceSemiAnnual),
+        priceAnnual: toNum(s.priceAnnual),
         diskQuotaMb: s.diskGb * 1024,
         bandwidthLimitMb: s.bandwidthGb * 1024,
         maxDomains: s.maxDomains,
@@ -191,8 +209,28 @@ function PlanForm({ open, onClose, plan, onSaved }: { open: boolean; onClose: ()
         <Field label="Plan name" span={2}>
           <input className="input" value={s.name} onChange={e => set('name', e.target.value)} autoFocus />
         </Field>
-        <Field label="Price (USD / month)">
+        <Field label="Base price (USD)" hint="Used as fallback when a cycle below isn't filled in. Linear math: e.g. base $100 → annual $1200 unless overridden.">
           <input className="input mono" type="number" min={0} step={0.01} value={s.pricePerPeriod} onChange={e => set('pricePerPeriod', Number(e.target.value))} />
+        </Field>
+        <Field label="" hint="" span={2}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+            <Field label="1 mo override">
+              <input className="input mono" type="number" min={0} step={0.01} placeholder="auto"
+                value={s.priceMonthly} onChange={e => set('priceMonthly', e.target.value)} />
+            </Field>
+            <Field label="3 mo override">
+              <input className="input mono" type="number" min={0} step={0.01} placeholder="auto"
+                value={s.priceQuarterly} onChange={e => set('priceQuarterly', e.target.value)} />
+            </Field>
+            <Field label="6 mo override">
+              <input className="input mono" type="number" min={0} step={0.01} placeholder="auto"
+                value={s.priceSemiAnnual} onChange={e => set('priceSemiAnnual', e.target.value)} />
+            </Field>
+            <Field label="12 mo override">
+              <input className="input mono" type="number" min={0} step={0.01} placeholder="auto"
+                value={s.priceAnnual} onChange={e => set('priceAnnual', e.target.value)} />
+            </Field>
+          </div>
         </Field>
         <Field label="Disk space (GB)">
           <input className="input mono" type="number" min={1} value={s.diskGb} onChange={e => set('diskGb', Number(e.target.value))} />

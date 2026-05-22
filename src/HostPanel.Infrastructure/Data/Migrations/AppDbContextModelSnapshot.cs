@@ -1351,8 +1351,20 @@ namespace HostPanel.Infrastructure.Data.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<decimal?>("PriceAnnual")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("PriceMonthly")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<decimal>("PricePerPeriod")
                         .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("PriceQuarterly")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("PriceSemiAnnual")
                         .HasColumnType("decimal(18,2)");
 
                     b.Property<string>("ReminderSchedule")

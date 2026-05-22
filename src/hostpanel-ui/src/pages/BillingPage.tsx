@@ -29,8 +29,11 @@ export function BillingPage() {
   const [genOpen, setGenOpen] = useState(false);
   const [genSubId, setGenSubId] = useState<number | ''>('');
   const [genAmount, setGenAmount] = useState('');
+  // F1: per-invoice provider override. Empty string = "inherit from subscription".
+  const [genProvider, setGenProvider] = useState<'' | 'Stripe' | 'PayPal'>('');
   const [genBusy, setGenBusy] = useState(false);
   const [genErr, setGenErr] = useState<string | null>(null);
+  const [genPaymentLink, setGenPaymentLink] = useState<string | null>(null);
 
   const reload = async () => {
     try {
@@ -44,14 +47,22 @@ export function BillingPage() {
 
   const generateInvoice = async () => {
     if (!genSubId) { setGenErr('Pick a subscription'); return; }
-    setGenBusy(true); setGenErr(null);
+    setGenBusy(true); setGenErr(null); setGenPaymentLink(null);
     try {
       const body: Record<string, unknown> = { subscriptionId: genSubId };
       if (genAmount && !isNaN(Number(genAmount))) body.amount = Number(genAmount);
-      await api.post('/billing/invoices/generate', body);
-      setGenOpen(false);
-      setGenAmount('');
-      setGenSubId('');
+      if (genProvider) body.provider = genProvider;
+      const r = await api.post<{ paymentLink?: string | null; providerInvoiceId?: string | null }>('/billing/invoices/generate', body);
+      // F1: backend returns paymentLink (Stripe/PayPal hosted URL). Show it inline so the
+      // operator can copy the link to email/Slack without bouncing through the providers' dashboards.
+      if (r.data.paymentLink) {
+        setGenPaymentLink(r.data.paymentLink);
+      } else {
+        setGenOpen(false);
+        setGenAmount('');
+        setGenSubId('');
+        setGenProvider('');
+      }
       void reload();
     } catch (e) {
       const msg = e && typeof e === 'object' && 'response' in e
@@ -158,9 +169,25 @@ export function BillingPage() {
               {subs.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </Field>
-          <Field label="Amount (optional)" hint="Leave blank to use the plan's price per period.">
+          <Field label="Amount (optional)" hint="Leave blank to use the plan's price for the subscription's current billing cycle (honors per-cycle overrides).">
             <input className="input mono" type="number" step="0.01" value={genAmount} onChange={e => setGenAmount(e.target.value)} placeholder="e.g. 49.00" />
           </Field>
+          <Field label="Payment provider" hint="Inherit = use the subscription's PreferredPaymentProvider. Override to send this single invoice via the other provider.">
+            <select className="select" value={genProvider} onChange={e => setGenProvider(e.target.value as '' | 'Stripe' | 'PayPal')}>
+              <option value="">Inherit from subscription</option>
+              <option value="Stripe">Stripe</option>
+              <option value="PayPal">PayPal</option>
+            </select>
+          </Field>
+          {genPaymentLink && (
+            <div className="alert success" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+              <strong style={{ fontSize: 13 }}>Invoice created — payment link:</strong>
+              <a href={genPaymentLink} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: 11.5, wordBreak: 'break-all' }}>
+                {genPaymentLink}
+              </a>
+              <button className="btn sm ghost" onClick={() => navigator.clipboard.writeText(genPaymentLink)}>Copy link</button>
+            </div>
+          )}
         </div>
       </Dialog>
     </>

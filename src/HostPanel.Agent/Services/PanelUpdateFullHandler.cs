@@ -90,17 +90,51 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
                 await RunStep("/usr/bin/mysqldump", ["--all-databases", "--result-file", dbDump], "DB backup", log, ct, optional: true);
             }
 
-            // Step 2: Git pull
+            // Step 2: Git pull. Capture HEAD before+after so we can drive selective rebuild —
+            // a docs-only commit shouldn't burn 3 min on a clean npm+dotnet pass.
             _logger.LogInformation("[UPDATE] Step 2/7: Pulling latest code");
             log.Add("=== Step 2: Git Pull ===");
+            string oldRev = "", newRev = "";
+            var frontendChanged = true;
+            var apiChanged = true;
+            var agentChanged = true;
             if (Directory.Exists(Path.Combine(sourceDir, ".git")))
             {
+                var oldRevRes = await ProcessRunner.RunAsync("/usr/bin/git", ["-C", sourceDir, "rev-parse", "HEAD"], ct);
+                oldRev = oldRevRes.StdOut.Trim();
                 await RunStep("/usr/bin/git", ["-C", sourceDir, "fetch", "origin"], "Git fetch", log, ct);
                 await RunStep("/usr/bin/git", ["-C", sourceDir, "reset", "--hard", $"origin/{branch}"], "Git reset", log, ct);
+                var newRevRes = await ProcessRunner.RunAsync("/usr/bin/git", ["-C", sourceDir, "rev-parse", "HEAD"], ct);
+                newRev = newRevRes.StdOut.Trim();
+                if (!string.IsNullOrEmpty(oldRev) && oldRev != newRev)
+                {
+                    var diffRes = await ProcessRunner.RunAsync("/usr/bin/git",
+                        ["-C", sourceDir, "diff", "--name-only", $"{oldRev}..{newRev}"], ct);
+                    var changed = diffRes.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    frontendChanged = changed.Any(p => p.StartsWith("src/hostpanel-ui/", StringComparison.Ordinal));
+                    apiChanged = changed.Any(p =>
+                        p.StartsWith("src/HostPanel.Api/", StringComparison.Ordinal) ||
+                        p.StartsWith("src/HostPanel.Core/", StringComparison.Ordinal) ||
+                        p.StartsWith("src/HostPanel.Infrastructure/", StringComparison.Ordinal) ||
+                        p.StartsWith("src/HostPanel.Modules.", StringComparison.Ordinal) ||
+                        p.StartsWith("src/HostPanel.Shared/", StringComparison.Ordinal));
+                    agentChanged = changed.Any(p =>
+                        p.StartsWith("src/HostPanel.Agent/", StringComparison.Ordinal) ||
+                        p.StartsWith("src/HostPanel.Core/", StringComparison.Ordinal) ||
+                        p.StartsWith("src/HostPanel.Shared/", StringComparison.Ordinal));
+                    log.Add($"Selective rebuild: frontend={frontendChanged}, api={apiChanged}, agent={agentChanged} ({changed.Length} files changed {oldRev[..7]}..{newRev[..7]})");
+                }
+                else if (oldRev == newRev)
+                {
+                    // Same HEAD post-reset — nothing to do, but we still let the pipeline complete a
+                    // restart so the operator can use Update as a "kick the service" button.
+                    frontendChanged = apiChanged = agentChanged = false;
+                    log.Add($"No new commits ({oldRev[..7]}). Skipping all builds; restart only.");
+                }
             }
             else
             {
-                log.Add("SKIP: No .git directory in source dir");
+                log.Add("SKIP: No .git directory in source dir — rebuilding everything to be safe");
             }
 
             // Step 3: Read new version
@@ -113,11 +147,15 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
                 log.Add($"New version: {newVersion}");
             }
 
-            // Step 4: Build frontend
+            // Step 4: Build frontend (only if any src/hostpanel-ui/** changed in this pull)
             _logger.LogInformation("[UPDATE] Step 3/7: Building frontend");
             log.Add("=== Step 3: Frontend Build ===");
             var uiDir = Path.Combine(sourceDir, "src", "hostpanel-ui");
-            if (Directory.Exists(uiDir))
+            if (!frontendChanged)
+            {
+                log.Add("SKIP: no frontend changes since last build");
+            }
+            else if (Directory.Exists(uiDir))
             {
                 await RunStep("/usr/bin/npm", ["ci", "--prefix", uiDir], "npm ci", log, ct, timeoutMs: 300_000);
                 await RunStep("/usr/bin/npm", ["run", "build", "--prefix", uiDir], "npm build", log, ct, timeoutMs: 120_000);
@@ -136,62 +174,90 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
                 log.Add("SKIP: No hostpanel-ui directory");
             }
 
-            // Step 5: Build API
+            // Step 5: Build API (only if any backend .cs changed)
             _logger.LogInformation("[UPDATE] Step 4/7: Building API");
             log.Add("=== Step 4: API Build ===");
-            await RunStep("/usr/bin/dotnet",
-                ["publish", $"{sourceDir}/src/HostPanel.Api/HostPanel.Api.csproj",
-                 "-c", "Release", "-o", installDir, "--nologo", "-v", "quiet"],
-                "API build", log, ct, timeoutMs: 300_000);
+            if (!apiChanged)
+            {
+                log.Add("SKIP: no API/Core/Infrastructure/Modules changes since last build");
+            }
+            else
+            {
+                await RunStep("/usr/bin/dotnet",
+                    ["publish", $"{sourceDir}/src/HostPanel.Api/HostPanel.Api.csproj",
+                     "-c", "Release", "-o", installDir, "--nologo", "-v", "quiet"],
+                    "API build", log, ct, timeoutMs: 300_000);
+            }
 
-            // Step 6: Build Agent
+            // Step 6: Build Agent (only if HostPanel.Agent or shared deps changed)
             _logger.LogInformation("[UPDATE] Step 5/7: Building Agent");
             log.Add("=== Step 5: Agent Build ===");
-            await RunStep("/usr/bin/dotnet",
-                ["publish", $"{sourceDir}/src/HostPanel.Agent/HostPanel.Agent.csproj",
-                 "-c", "Release", "-o", $"{installDir}/agent", "--nologo", "-v", "quiet"],
-                "Agent build", log, ct, timeoutMs: 300_000);
+            if (!agentChanged)
+            {
+                log.Add("SKIP: no Agent/Core/Shared changes since last build");
+            }
+            else
+            {
+                await RunStep("/usr/bin/dotnet",
+                    ["publish", $"{sourceDir}/src/HostPanel.Agent/HostPanel.Agent.csproj",
+                     "-c", "Release", "-o", $"{installDir}/agent", "--nologo", "-v", "quiet"],
+                    "Agent build", log, ct, timeoutMs: 300_000);
+            }
 
             // Step 7: Fix ownership
             log.Add("=== Step 6: Permissions ===");
             await RunStep("/bin/chown", ["-R", "www-data:www-data", installDir], "API ownership", log, ct);
             await RunStep("/bin/chown", ["-R", "root:root", $"{installDir}/agent"], "Agent ownership", log, ct);
 
-            // Step 8: Restart services
+            // Step 8: Restart services (only the ones whose code we actually rebuilt).
             // Restart API first (safe — doesn't affect the agent process).
             // For the agent itself, spawn a detached shell that waits 3s then restarts —
             // the agent can't await its own systemctl restart (SIGTERM kills the waiter).
             // systemd's Restart=always will bring the new binary up automatically.
             _logger.LogInformation("[UPDATE] Step 6/7: Restarting services");
             log.Add("=== Step 7: Restart ===");
-            await RunStep("/usr/bin/systemctl", ["restart", "hostpanel-api"], "Restart API", log, ct);
-            await Task.Delay(3000, ct);
-            // Schedule self-restart detached (fire-and-forget)
-            using var p = new System.Diagnostics.Process();
-            p.StartInfo = new System.Diagnostics.ProcessStartInfo("/bin/bash",
-                "-c \"sleep 3 && systemctl restart hostpanel-agent\"")
+            if (apiChanged || string.IsNullOrEmpty(oldRev))
             {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = false,
-                RedirectStandardError = false
-            };
-            p.Start();
-            log.Add("Agent self-restart scheduled");
-            await Task.Delay(1000, ct);
+                await RunStep("/usr/bin/systemctl", ["restart", "hostpanel-api"], "Restart API", log, ct);
+                await Task.Delay(3000, ct);
+            }
+            else
+            {
+                log.Add("SKIP: API not rebuilt — leaving running instance alone");
+            }
+            if (agentChanged || string.IsNullOrEmpty(oldRev))
+            {
+                using var p = new System.Diagnostics.Process();
+                p.StartInfo = new System.Diagnostics.ProcessStartInfo("/bin/bash",
+                    "-c \"sleep 3 && systemctl restart hostpanel-agent\"")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false
+                };
+                p.Start();
+                log.Add("Agent self-restart scheduled");
+                await Task.Delay(1000, ct);
+            }
+            else
+            {
+                log.Add("SKIP: Agent not rebuilt — leaving running instance alone");
+            }
 
-            // Step 9: Health check
+            // Step 9: Health check. 30s window per operator spec — long enough for systemd
+            // restart + Kestrel cold-start + EF migration replay in a worst-case migration.
             _logger.LogInformation("[UPDATE] Step 7/7: Health check");
             log.Add("=== Health Check ===");
             var healthOk = false;
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < 10; i++)
             {
                 var hc = await ProcessRunner.RunAsync("/usr/bin/curl",
                     ["-sk", "--max-time", "5", "https://localhost:8443/api/v1/health"], ct);
                 if (hc.StdOut.Contains("healthy"))
                 {
                     healthOk = true;
-                    log.Add("Health check PASSED");
+                    log.Add($"Health check PASSED (attempt {i + 1})");
                     break;
                 }
                 await Task.Delay(3000, ct);

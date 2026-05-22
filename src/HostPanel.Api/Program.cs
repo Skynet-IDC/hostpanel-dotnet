@@ -172,7 +172,18 @@ builder.Services.AddSingleton<IDbProvisioningService, MariaDbProvisioner>();
 builder.Services.AddSingleton<IDbProvisioningService, PostgreSqlProvisioner>();
 builder.Services.AddSingleton<IDbProvisioningService, SqliteProvisioner>();
 builder.Services.AddSingleton<DbProvisioningFactory>();
-builder.Services.AddSingleton<IPaymentProvider, PayPalInvoicingProvider>();
+// Payment providers + their config store.
+// PaymentProviderConfigService is the single source of truth for credentials —
+// PayPalInvoicingProvider reads from it instead of IConfiguration so Settings UI
+// updates take effect immediately (60s cache).
+builder.Services.AddMemoryCache();
+builder.Services.AddDataProtection();
+builder.Services.AddHttpClient("paypal");
+builder.Services.AddHttpClient("paypal-auth");
+builder.Services.AddHttpClient("paypal-validate");
+builder.Services.AddSingleton<HostPanel.Modules.Billing.Services.PaymentProviderConfigService>();
+builder.Services.AddSingleton<PayPalInvoicingProvider>();
+builder.Services.AddSingleton<IPaymentProvider>(sp => sp.GetRequiredService<PayPalInvoicingProvider>());
 builder.Services.AddSingleton<IPaymentProvider, StripeProvider>();
 builder.Services.AddHostedService<BillingCycleService>();
 builder.Services.AddHostedService<SslRenewalBackgroundService>();

@@ -37,6 +37,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<AppConfig> AppConfigs => Set<AppConfig>();
     public DbSet<HaSyncState> HaSyncStates => Set<HaSyncState>();
     public DbSet<HaPairingToken> HaPairingTokens => Set<HaPairingToken>();
+    public DbSet<PaymentProviderConfig> PaymentProviderConfigs => Set<PaymentProviderConfig>();
     public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
     public DbSet<CustomerBranding> CustomerBrandings => Set<CustomerBranding>();
     public DbSet<MigrationSource> MigrationSources => Set<MigrationSource>();
@@ -188,6 +189,13 @@ public class AppDbContext : IdentityDbContext<AppUser>
         {
             e.HasIndex(t => t.Token).IsUnique();
             e.HasIndex(t => t.ExpiresAt);
+        });
+
+        // PaymentProviderConfig — unique on (Provider, Sandbox) so each combination of
+        // provider+environment has exactly one credential row.
+        builder.Entity<PaymentProviderConfig>(e =>
+        {
+            e.HasIndex(p => new { p.Provider, p.Sandbox }).IsUnique();
         });
     }
 

@@ -175,6 +175,36 @@ public class BillingController : ControllerBase
         return Ok();
     }
 
+    /// <summary>
+    /// Admin-only synthetic PayPal webhook for integration testing. Skips the
+    /// signature-verification step (no real PayPal signature available) and
+    /// drives the same MarkInvoicePaidAsync code path the real webhook hits.
+    /// Lets us prove the wire end-to-end on a fresh box before a real customer
+    /// payment ever flows through. Pass invoiceId via query string or body.
+    /// </summary>
+    [HttpPost("webhooks/paypal/test")]
+    [Authorize(AuthenticationSchemes = "MultiAuth", Roles = "Admin")]
+    public async Task<IActionResult> PayPalWebhookTest([FromQuery] string? providerInvoiceId = null, [FromQuery] string eventType = "PAYMENT.CAPTURE.COMPLETED")
+    {
+        _logger.LogInformation("PayPal test webhook fired by admin: eventType={Event} providerInvoiceId={Id}", eventType, providerInvoiceId);
+
+        if (eventType == "INVOICING.INVOICE.PAID" || eventType == "PAYMENT.CAPTURE.COMPLETED")
+        {
+            if (string.IsNullOrWhiteSpace(providerInvoiceId))
+                return BadRequest(new { message = "providerInvoiceId query param is required for paid-event tests" });
+
+            await MarkInvoicePaidAsync(providerInvoiceId);
+            return Ok(new
+            {
+                synthesizedEvent = eventType,
+                providerInvoiceId,
+                message = "Synthetic webhook processed. Real webhook would also go through signature verification first."
+            });
+        }
+
+        return Ok(new { synthesizedEvent = eventType, note = "Event type not yet handled by the test endpoint" });
+    }
+
     [HttpPost("webhooks/stripe")]
     [AllowAnonymous]
     public async Task<IActionResult> StripeWebhook()

@@ -1,28 +1,30 @@
 using System.Net.Security;
 using System.Net.Sockets;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using HostPanel.Core.DTOs;
 using HostPanel.Core.Interfaces;
 using HostPanel.Core.Models;
+using HostPanel.Shared.Tls;
 
 namespace HostPanel.Infrastructure.Services;
 
-/// <summary>
-/// Communicates with a HostPanel Agent on a remote server via TCP + TLS.
-/// For production, replace with gRPC + mTLS.
-/// </summary>
+// Communicates with a HostPanel Agent on a remote server over TCP.
+// Optionally upgrades the connection to mTLS via AgentTlsContext — when enabled,
+// both sides present a cert from the configured trust store, then the bearer
+// token is validated as a second factor on the agent side.
 public class RemoteServerAgent : IServerAgent
 {
     private readonly Server _server;
     private readonly ILogger<RemoteServerAgent> _logger;
+    private readonly AgentTlsContext _tls;
 
-    public RemoteServerAgent(Server server, ILogger<RemoteServerAgent> logger)
+    public RemoteServerAgent(Server server, ILogger<RemoteServerAgent> logger, AgentTlsContext tls)
     {
         _server = server;
         _logger = logger;
+        _tls = tls;
     }
 
     public async Task<AgentResponse> ExecuteAsync(AgentRequest request, CancellationToken cancellationToken = default)
@@ -36,25 +38,19 @@ public class RemoteServerAgent : IServerAgent
 
             Stream connStream = client.GetStream();
 
-            // Use mTLS if certificates are configured
-            if (!string.IsNullOrEmpty(_server.TlsCertificatePath) && File.Exists(_server.TlsCertificatePath))
+            if (_tls.Enabled && _tls.Identity is not null)
             {
-                var sslStream = new SslStream(connStream, false, (sender, cert, chain, errors) =>
-                {
-                    // In production: validate server cert against known CA
-                    return errors == SslPolicyErrors.None || errors == SslPolicyErrors.RemoteCertificateChainErrors;
-                });
-
-                var clientCert = new X509Certificate2(_server.TlsCertificatePath, _server.TlsKeyPath);
+                var sslStream = new SslStream(connStream, leaveInnerStreamOpen: false, _tls.BuildValidationCallback());
                 await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
                 {
-                    TargetHost = _server.Hostname,
-                    ClientCertificates = new X509CertificateCollection { clientCert },
+                    // Peers are addressed by IP and certs carry SAN=ip, not DNS, so the
+                    // TargetHost field is informational only — the validation callback is what gates.
+                    TargetHost = _server.IpAddress,
+                    ClientCertificates = new System.Security.Cryptography.X509Certificates.X509CertificateCollection { _tls.Identity },
                     EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13
                 }, cancellationToken);
-
                 connStream = sslStream;
-                _logger.LogDebug("mTLS connection established to {Host}", _server.Hostname);
+                _logger.LogDebug("mTLS established with {Host}:{Port}", _server.IpAddress, _server.AgentPort);
             }
 
             using var writer = new StreamWriter(connStream, Encoding.UTF8) { AutoFlush = true };

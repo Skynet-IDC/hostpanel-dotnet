@@ -1,7 +1,19 @@
 using HostPanel.Agent;
 using HostPanel.Agent.Services;
+using HostPanel.Shared.Tls;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// mTLS context for cross-host agent calls. Disabled by default so a fresh install
+// with no trust-store peers configured still operates over plain TCP + bearer token.
+// To enable: drop peer certs into /etc/hostpanel/tls/trusted-cas.d/ on BOTH sides
+// and set Agent:Tcp:Tls:Enabled=true. Load is fail-loud — wrong config crashes at
+// startup rather than silently fielding unauthenticated traffic.
+builder.Services.AddSingleton(_ => AgentTlsContext.Load(
+    enabled: builder.Configuration.GetValue("Agent:Tcp:Tls:Enabled", false),
+    certPath: builder.Configuration["Agent:Tcp:Tls:CertPath"],
+    keyPath: builder.Configuration["Agent:Tcp:Tls:KeyPath"],
+    trustedRootsDir: builder.Configuration["Agent:Tcp:Tls:TrustedRootsDir"]));
 
 // Register services
 builder.Services.AddSingleton<TokenAuthService>();

@@ -1,6 +1,9 @@
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using HostPanel.Agent.Services;
+using HostPanel.Shared.Tls;
 
 namespace HostPanel.Agent;
 
@@ -8,22 +11,21 @@ namespace HostPanel.Agent;
 // call its standby's agent during HA configure-failover, replication-lag checks,
 // failover, and failback. Disabled by default — enable via Agent:Tcp:Enabled=true.
 //
-// Security model:
+// Security layers (each independent — defense in depth):
 //   1. Bound to a specific IP (operator-supplied via Agent:Tcp:BindAddress) so the
 //      socket is not exposed on a WAN-facing NIC. Refuses to bind 0.0.0.0; if no
-//      bind address is configured, falls back to loopback (which makes the listener
-//      useless for cross-host calls — that's the intent, fail closed).
+//      bind address is configured, falls back to loopback (fail closed).
 //   2. UFW rule installed by the installer restricts source IPs to the LAN subnet.
-//   3. Bearer token in Agent:Token is validated with constant-time compare by the
-//      shared AgentSessionProcessor.
-//
-// Future hardening: mTLS via Agent:Tcp:CertificatePath, plus a per-server allowlist
-// of caller certs. The Server.IpAddress field on the panel side already supports
-// switching to a port matching a TLS-fronted listener.
+//   3. Optional mTLS via AgentTlsContext — when Agent:Tcp:Tls:Enabled=true the
+//      socket is wrapped in SslStream and the peer must present a cert from the
+//      drop-file trust store under /etc/hostpanel/tls/trusted-cas.d/.
+//   4. Bearer token in Agent:Token is validated with constant-time compare by the
+//      shared AgentSessionProcessor after the TLS handshake completes.
 public class TcpListenerWorker : BackgroundService
 {
     private readonly ILogger<TcpListenerWorker> _logger;
     private readonly AgentSessionProcessor _sessionProcessor;
+    private readonly AgentTlsContext _tls;
     private readonly bool _enabled;
     private readonly IPAddress _bindAddress;
     private readonly int _port;
@@ -31,10 +33,12 @@ public class TcpListenerWorker : BackgroundService
     public TcpListenerWorker(
         ILogger<TcpListenerWorker> logger,
         AgentSessionProcessor sessionProcessor,
+        AgentTlsContext tls,
         IConfiguration config)
     {
         _logger = logger;
         _sessionProcessor = sessionProcessor;
+        _tls = tls;
         _enabled = config.GetValue("Agent:Tcp:Enabled", false);
         _port = config.GetValue("Agent:Tcp:Port", 50051);
 
@@ -83,7 +87,8 @@ public class TcpListenerWorker : BackgroundService
             return;
         }
 
-        _logger.LogInformation("Agent TCP listener accepting connections on {Endpoint}", endpoint);
+        _logger.LogInformation("Agent TCP listener accepting connections on {Endpoint} (mTLS {Tls})",
+            endpoint, _tls.Enabled ? "enabled" : "disabled");
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -105,7 +110,38 @@ public class TcpListenerWorker : BackgroundService
 
     private async Task HandleClientAsync(Socket clientSocket, CancellationToken cancellationToken)
     {
-        using var stream = new NetworkStream(clientSocket, ownsSocket: true);
-        await _sessionProcessor.HandleAsync(stream, cancellationToken);
+        using var rawStream = new NetworkStream(clientSocket, ownsSocket: true);
+        Stream sessionStream = rawStream;
+        SslStream? ssl = null;
+
+        try
+        {
+            if (_tls.Enabled && _tls.Identity is not null)
+            {
+                ssl = new SslStream(rawStream, leaveInnerStreamOpen: false, _tls.BuildValidationCallback());
+                await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+                {
+                    ServerCertificate = _tls.Identity,
+                    ClientCertificateRequired = true,
+                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
+                    CertificateRevocationCheckMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck
+                }, cancellationToken);
+                sessionStream = ssl;
+            }
+
+            await _sessionProcessor.HandleAsync(sessionStream, cancellationToken);
+        }
+        catch (AuthenticationException ex)
+        {
+            _logger.LogWarning("Rejected TCP peer at mTLS handshake: {Message}", ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling TCP client");
+        }
+        finally
+        {
+            ssl?.Dispose();
+        }
     }
 }

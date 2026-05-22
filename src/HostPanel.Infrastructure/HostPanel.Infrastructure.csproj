@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\HostPanel.Core\HostPanel.Core.csproj" />
+    <ProjectReference Include="..\HostPanel.Shared\HostPanel.Shared.csproj" />
   </ItemGroup>
 
   <ItemGroup>

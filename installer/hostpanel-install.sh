@@ -688,7 +688,13 @@ EOF
     "Tcp": {
       "Enabled": true,
       "Port": 50051,
-      "BindAddress": "${LAN_IP}"
+      "BindAddress": "${LAN_IP}",
+      "Tls": {
+        "Enabled": false,
+        "CertPath": "${CONFIG_DIR}/tls/server.crt",
+        "KeyPath": "${CONFIG_DIR}/tls/server.key",
+        "TrustedRootsDir": "${CONFIG_DIR}/tls/trusted-cas.d"
+      }
     }
   },
   "Ssl": {
@@ -766,7 +772,13 @@ SERVICE
     "Tcp": {
       "Enabled": true,
       "Port": 50051,
-      "BindAddress": "${DEPLOY_LAN_IP}"
+      "BindAddress": "${DEPLOY_LAN_IP}",
+      "Tls": {
+        "Enabled": false,
+        "CertPath": "${CONFIG_DIR}/tls/server.crt",
+        "KeyPath": "${CONFIG_DIR}/tls/server.key",
+        "TrustedRootsDir": "${CONFIG_DIR}/tls/trusted-cas.d"
+      }
     }
   }
 }
@@ -941,6 +953,46 @@ VSFCONF
     log_info "vsftpd configured and started"
 }
 
+# Generate self-signed cert + key for the cross-host agent mTLS mesh. Idempotent:
+# skipped if /etc/hostpanel/tls/server.crt already exists (preserves cluster trust
+# across re-runs). The cert carries SAN=ip:<LAN_IP> so peers can validate by IP.
+# Default 10y lifetime; rotate manually if compromised.
+install_ha_tls_cert() {
+    local TLS_DIR="${CONFIG_DIR}/tls"
+    local CRT="${TLS_DIR}/server.crt"
+    local KEY="${TLS_DIR}/server.key"
+    local TRUST_DIR="${TLS_DIR}/trusted-cas.d"
+
+    mkdir -p "$TLS_DIR" "$TRUST_DIR"
+
+    if [[ -f "$CRT" && -f "$KEY" ]]; then
+        log_info "HA agent TLS cert already present at ${CRT} (preserving existing)"
+    else
+        local LAN_IP
+        LAN_IP="${DEPLOY_LAN_IP:-$(hostname -I | awk '{print $1}')}"
+        local SUBJ="/CN=hostpanel-agent-$(hostname -s)"
+
+        # openssl 3.x supports -addext for SAN inline. Cert is its own root (self-signed),
+        # so peers add THIS cert to their trusted-cas.d/ to authorize the connection.
+        openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$KEY" -out "$CRT" \
+            -days 3650 -subj "$SUBJ" \
+            -addext "subjectAltName=IP:${LAN_IP},IP:127.0.0.1,DNS:$(hostname -s)" \
+            -addext "keyUsage=digitalSignature,keyEncipherment" \
+            -addext "extendedKeyUsage=serverAuth,clientAuth" \
+            >/dev/null 2>&1
+        log_info "Generated HA agent TLS cert: ${CRT} (SAN=IP:${LAN_IP})"
+    fi
+
+    # Cert is world-readable (it's public); key is group-readable by www-data so the
+    # API process (ServerAgentFactory) can present it when dialing remote agents.
+    chown root:www-data "$TLS_DIR" "$CRT" "$KEY" "$TRUST_DIR"
+    chmod 750 "$TLS_DIR"
+    chmod 644 "$CRT"
+    chmod 640 "$KEY"
+    chmod 755 "$TRUST_DIR"
+}
+
 configure_firewall() {
     log_info "Configuring firewall..."
     ufw default deny incoming
@@ -1010,6 +1062,7 @@ main() {
     start_clamav
     install_webmail
     deploy_hostpanel
+    install_ha_tls_cert
     configure_sudoers
     configure_firewall
     start_hostpanel
@@ -1054,6 +1107,15 @@ main() {
         echo "    3. Copy frontend dist to ${INSTALL_DIR}/wwwroot/"
         echo "    4. Run: systemctl start hostpanel-agent hostpanel-api"
     fi
+    echo ""
+    echo "  HA agent mTLS cert generated at: ${CONFIG_DIR}/tls/server.crt"
+    echo "  To enable mTLS between primary + standby:"
+    echo "    1. On each peer: scp ${CONFIG_DIR}/tls/server.crt to the OTHER side's"
+    echo "       ${CONFIG_DIR}/tls/trusted-cas.d/<peer-hostname>.crt"
+    echo "    2. Set Agent:Tcp:Tls:Enabled=true in BOTH appsettings.Production.json files"
+    echo "       (${INSTALL_DIR}/appsettings.Production.json + ${INSTALL_DIR}/agent/appsettings.Production.json)"
+    echo "    3. systemctl restart hostpanel-agent hostpanel-api on both sides"
+    echo "  Until then HA operates over plain TCP with bearer token + UFW source allowlist."
     echo ""
     echo "================================================"
 }

@@ -144,6 +144,14 @@ builder.Services.AddScoped<HostPanel.Api.Middleware.TenantAuthorizationService>(
 
 // Services
 builder.Services.AddScoped<JwtService>();
+// mTLS context for ServerAgentFactory → RemoteServerAgent. Off by default (token-only)
+// so the API can talk to remote agents without operator-provided trust roots. Enable
+// by setting Agent:Tcp:Tls:Enabled=true on both sides and cross-installing peer certs.
+builder.Services.AddSingleton(_ => HostPanel.Shared.Tls.AgentTlsContext.Load(
+    enabled: builder.Configuration.GetValue("Agent:Tcp:Tls:Enabled", false),
+    certPath: builder.Configuration["Agent:Tcp:Tls:CertPath"],
+    keyPath: builder.Configuration["Agent:Tcp:Tls:KeyPath"],
+    trustedRootsDir: builder.Configuration["Agent:Tcp:Tls:TrustedRootsDir"]));
 builder.Services.AddSingleton<IServerAgent, LocalServerAgent>();
 builder.Services.AddSingleton<ServerAgentFactory>();
 builder.Services.AddScoped<IReconciler, SubscriptionReconciler>();

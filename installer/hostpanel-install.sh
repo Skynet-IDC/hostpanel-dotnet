@@ -560,6 +560,13 @@ install_webmail() {
 deploy_hostpanel() {
     log_info "Deploying HostPanel..."
 
+    # LAN IP detected once and reused for: API appsettings (Agent:Tcp:BindAddress
+    # so the local API knows what host to embed in the standby-side agent config),
+    # AND for the agent's own appsettings.Production.json so TcpListenerWorker
+    # binds the right NIC. Cached at function scope because the two writes are
+    # ~150 lines apart.
+    DEPLOY_LAN_IP=$(hostname -I | awk '{print $1}')
+
     # Create directories
     mkdir -p "$INSTALL_DIR/agent" "$INSTALL_DIR/wwwroot"
     mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$BACKUP_DIR" "$SSL_DIR"
@@ -655,11 +662,10 @@ EOF
             CONN_STR="Server=localhost;Database=HostPanel;User Id=sa;Password=${SQL_PASSWORD};TrustServerCertificate=True;"
         fi
 
-        # LAN IP for the cross-host agent TCP listener. Bound to a specific NIC so the
-        # listener cannot accidentally appear on a WAN-facing interface; defense-in-depth
+        # Use the LAN IP detected at the top of deploy_hostpanel(). Bound to a specific NIC
+        # so the listener cannot accidentally appear on a WAN-facing interface; defense-in-depth
         # with the UFW source-IP allowlist in configure_firewall.
-        local LAN_IP
-        LAN_IP=$(hostname -I | awk '{print $1}')
+        local LAN_IP="$DEPLOY_LAN_IP"
 
         cat > "${INSTALL_DIR}/appsettings.Production.json" <<SETTINGS
 {
@@ -742,10 +748,29 @@ WorkingDirectory=${INSTALL_DIR}/agent
 ExecStart=/usr/bin/dotnet HostPanel.Agent.dll
 Restart=always
 RestartSec=10
+Environment=DOTNET_ENVIRONMENT=Production
 
 [Install]
 WantedBy=multi-user.target
 SERVICE
+
+    # Agent reads its config from ${INSTALL_DIR}/agent/, NOT from the API's
+    # appsettings.Production.json one level up. Without this overlay, TcpListenerWorker
+    # sees Agent:Tcp:Enabled=false (default) and exits without binding port 50051,
+    # which silently breaks HA configure-failover from primary → standby agent.
+    cat > "${INSTALL_DIR}/agent/appsettings.Production.json" <<AGENTSETTINGS
+{
+  "Agent": {
+    "SocketPath": "/var/run/hostpanel/agent.sock",
+    "TokenPath": "${CONFIG_DIR}/agent.token",
+    "Tcp": {
+      "Enabled": true,
+      "Port": 50051,
+      "BindAddress": "${DEPLOY_LAN_IP}"
+    }
+  }
+}
+AGENTSETTINGS
 
     # Ensure socket directory survives reboot
     cat > /etc/tmpfiles.d/hostpanel.conf <<TMPFILES

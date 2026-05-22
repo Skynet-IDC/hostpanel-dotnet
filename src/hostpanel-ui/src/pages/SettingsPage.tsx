@@ -63,6 +63,8 @@ export function SettingsPage() {
         </Link>
       </div>
 
+      <PayPalCredentialsCard />
+
       <Card
         title="API keys"
         sub="Bearer tokens for programmatic access. Use them in CI, MCPs, or webhooks."
@@ -101,6 +103,168 @@ export function SettingsPage() {
 
       <CreateKeyDialog open={createOpen} onClose={() => setCreateOpen(false)} onCreated={key => { setCreateOpen(false); setRevealed(key); void load(); }} />
     </>
+  );
+}
+
+/**
+ * Phase A: PayPal credentials editor. Backend (PaymentProviderConfigController)
+ * stores creds in the DB with IDataProtector-encrypted secrets. We validate
+ * against PayPal's /v1/oauth2/token BEFORE persisting so the operator gets
+ * immediate "Connected" feedback instead of finding out at first invoice creation.
+ */
+interface PaymentProviderRow {
+  id: number;
+  provider: string;
+  sandbox: boolean;
+  clientId: string;
+  secret: string;        // always masked from the API
+  webhookId: string | null;
+  enabled: boolean;
+  lastValidatedAt: string | null;
+  lastValidationMessage: string | null;
+}
+
+function PayPalCredentialsCard() {
+  const [rows, setRows] = useState<PaymentProviderRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+
+  const load = async () => {
+    setLoading(true); setErr(null);
+    try {
+      const { data } = await api.get<PaymentProviderRow[]>('/settings/billing');
+      setRows(data.filter(r => r.provider === 'PayPal'));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Load failed');
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { void load(); }, []);
+
+  const remove = async (id: number, sandbox: boolean) => {
+    if (!confirm(`Delete the ${sandbox ? 'sandbox' : 'live'} PayPal credentials? Invoice creation via PayPal stops until you re-add them.`)) return;
+    await api.delete(`/settings/billing/${id}`);
+    void load();
+  };
+
+  return (
+    <>
+      <Card
+        title="PayPal credentials"
+        sub="Stored in DB with encrypted secret. Validates against PayPal's OAuth endpoint before saving so you know immediately if the credentials are wrong."
+        flush
+        actions={<button className="btn primary" onClick={() => setEditOpen(true)}>
+          <Icons.plus />{rows.length > 0 ? 'Add / update' : 'Configure PayPal'}
+        </button>}
+      >
+        {err && <div className="alert danger" style={{ margin: 12 }}><Icons.alert />{err}</div>}
+        {loading ? <div className="muted" style={{ padding: 16 }}>Loading…</div>
+          : rows.length === 0 ? <Empty icon="key" title="PayPal not configured" sub="Add credentials so invoice generation can produce real PayPal-hosted payment links." />
+          : (
+            <table className="tbl">
+              <thead><tr><th>Mode</th><th>Client ID</th><th>Secret</th><th>Webhook ID</th><th>Status</th><th>Last validated</th><th style={{ textAlign: 'right' }} /></tr></thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.id}>
+                    <td>{r.sandbox ? <Badge>Sandbox</Badge> : <Badge tone="primary">Live</Badge>} {r.enabled && <Badge tone="success">Active</Badge>}</td>
+                    <td className="mono" style={{ fontSize: 11.5 }}>{r.clientId.slice(0, 24)}{r.clientId.length > 24 ? '…' : ''}</td>
+                    <td className="muted mono" style={{ fontSize: 11.5 }}>{r.secret}</td>
+                    <td className="mono muted" style={{ fontSize: 11.5 }}>{r.webhookId ?? '—'}</td>
+                    <td title={r.lastValidationMessage ?? ''}>
+                      {r.lastValidatedAt ? <Badge tone="success">Validated</Badge> : <Badge tone="danger">Not validated</Badge>}
+                    </td>
+                    <td className="muted mono" style={{ fontSize: 11.5 }}>{r.lastValidatedAt ? new Date(r.lastValidatedAt).toLocaleString() : '—'}</td>
+                    <td><div className="row-actions"><IconBtn icon="trash" danger title="Delete" onClick={() => remove(r.id, r.sandbox)} /></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </Card>
+      <PayPalCredentialsDialog open={editOpen} onClose={() => setEditOpen(false)} onSaved={() => { setEditOpen(false); void load(); }} />
+    </>
+  );
+}
+
+function PayPalCredentialsDialog({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [webhookId, setWebhookId] = useState('');
+  const [sandbox, setSandbox] = useState(true);
+  const [enabled, setEnabled] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string; hint?: string } | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setClientId(''); setClientSecret(''); setWebhookId('');
+      setSandbox(true); setEnabled(true); setFeedback(null);
+    }
+  }, [open]);
+
+  const submit = async (saveEvenIfInvalid: boolean) => {
+    setBusy(true); setFeedback(null);
+    try {
+      const { data } = await api.put<{ ok: boolean; message?: string }>('/settings/billing/paypal', {
+        clientId, clientSecret, sandbox,
+        webhookId: webhookId || null,
+        enabled, saveEvenIfInvalid
+      });
+      if (data.ok) {
+        setFeedback({ ok: true, msg: data.message ?? 'Connected and saved.' });
+        setTimeout(onSaved, 800);
+      } else {
+        setFeedback({ ok: false, msg: data.message ?? 'Validation failed.' });
+      }
+    } catch (e) {
+      const resp = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string; hint?: string } } }).response : null;
+      setFeedback({ ok: false, msg: resp?.data?.message ?? 'Save failed', hint: resp?.data?.hint });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} title="PayPal credentials"
+      foot={<>
+        <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        {feedback && !feedback.ok && feedback.hint?.includes('saveEvenIfInvalid') && (
+          <button className="btn" onClick={() => submit(true)} disabled={busy}>Save anyway</button>
+        )}
+        <button className="btn primary" onClick={() => submit(false)} disabled={busy || !clientId.trim() || !clientSecret.trim()}>
+          {busy ? 'Validating…' : 'Test & save'}
+        </button>
+      </>}>
+      <Field label="Client ID" hint="From developer.paypal.com → Apps & Credentials → your app.">
+        <input className="input" autoFocus value={clientId} onChange={e => setClientId(e.target.value)} placeholder="A21AAxxx…" />
+      </Field>
+      <Field label="Client secret" hint="The 'Secret' shown beneath the Client ID in PayPal's dashboard.">
+        <input className="input" type="password" value={clientSecret} onChange={e => setClientSecret(e.target.value)} placeholder="EHxxx…" />
+      </Field>
+      <Field label="Webhook ID (optional)" hint="From Apps & Credentials → your app → Webhooks. Required for webhook signature verification.">
+        <input className="input" value={webhookId} onChange={e => setWebhookId(e.target.value)} placeholder="WH-xxx…" />
+      </Field>
+      <Field label="Environment">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={sandbox} onChange={e => setSandbox(e.target.checked)} />
+          <span>Use sandbox API (uncheck for production)</span>
+        </label>
+      </Field>
+      <Field label="Enable">
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+          <span>Activate these credentials at runtime (only one per provider can be active)</span>
+        </label>
+      </Field>
+      {feedback && (
+        <div className={`alert ${feedback.ok ? 'success' : 'danger'}`} style={{ marginTop: 12 }}>
+          {feedback.ok ? <Icons.check2 /> : <Icons.alert />}
+          <div>
+            <div style={{ fontWeight: 600 }}>{feedback.ok ? 'Validated' : 'Not validated'}</div>
+            <div style={{ fontSize: 12, marginTop: 2 }}>{feedback.msg}</div>
+            {feedback.hint && <div className="muted" style={{ fontSize: 11.5, marginTop: 4 }}>{feedback.hint}</div>}
+          </div>
+        </div>
+      )}
+    </Dialog>
   );
 }
 

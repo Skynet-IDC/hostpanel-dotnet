@@ -172,11 +172,11 @@ export function BillingPage() {
           <Field label="Amount (optional)" hint="Leave blank to use the plan's price for the subscription's current billing cycle (honors per-cycle overrides).">
             <input className="input mono" type="number" step="0.01" value={genAmount} onChange={e => setGenAmount(e.target.value)} placeholder="e.g. 49.00" />
           </Field>
-          <Field label="Payment provider" hint="Inherit = use the subscription's PreferredPaymentProvider. Override to send this single invoice via the other provider.">
+          <Field label="Payment provider" hint="Inherit = use the subscription's PreferredPaymentProvider. Stripe integration is on the roadmap — use PayPal for now.">
             <select className="select" value={genProvider} onChange={e => setGenProvider(e.target.value as '' | 'Stripe' | 'PayPal')}>
               <option value="">Inherit from subscription</option>
-              <option value="Stripe">Stripe</option>
               <option value="PayPal">PayPal</option>
+              <option value="Stripe" disabled title="Stripe integration coming soon — use PayPal for now">Stripe (coming soon)</option>
             </select>
           </Field>
           {genPaymentLink && (

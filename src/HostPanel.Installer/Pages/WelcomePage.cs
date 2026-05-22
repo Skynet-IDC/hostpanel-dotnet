@@ -1,42 +1,41 @@
+using HostPanel.Installer.Services;
+using static HostPanel.Installer.Pages.FormHelpers;
+
 namespace HostPanel.Installer.Pages;
 
-/// <summary>
-/// Stage 1 / wizard page 1 — Welcome.
-/// Currently a placeholder that confirms the binary booted. Stage 3 turns
-/// this into the actual first form page (primary/standby radio + Sentry
-/// telemetry opt-in).
-/// </summary>
+/// <summary>Wizard page 1 — pick role (primary vs standby) + Sentry opt-in.</summary>
 public static class WelcomePage
 {
-    public static string Render() =>
+    public static string Render(WizardState s) =>
         HtmlLayout.RenderPage(
             title: "Welcome",
             currentStep: 1,
             totalSteps: 9,
-            bodyContent: """
+            bodyContent: $"""
 <h1>HostPanel installer</h1>
-<p class='sub'>Binary booted. Run the preflight to see what's on this box, then
-the wizard will collect your install choices.</p>
+<p class='sub'>Tell us what you're installing. Every other prompt in this wizard
+defaults to <em>off</em> — nothing changes on this box unless you tick a box.</p>
+
+{Form("/wizard/welcome",
+    $"""
+<div class='card'>
+  {Radio("role", "What are you installing?", s.Role.ToString(),
+    ("Primary", "Primary — a fresh HostPanel control plane", "Standalone or the first half of an HA pair."),
+    ("Standby", "Standby — joining an existing primary", "The primary must already be running and you need a pairing token from its Settings → HA page."))}
+</div>
 
 <div class='card'>
-  <dl class='meta'>
-    <dt>Stage:</dt>      <dd id='stage'>…</dd>
-    <dt>Version:</dt>    <dd id='version'>…</dd>
-    <dt>Listening:</dt>  <dd id='boundAt'>…</dd>
-  </dl>
+  <p style="margin-bottom:.75rem; font-weight:500">Telemetry</p>
+  {Check("sentryOptIn", "Send anonymous install-failure envelopes to Sentry", s.SentryOptIn,
+    "Off by default. If enabled, the installer reports only crash/failure events (no credentials, no config). Helps us catch installer bugs on boxes we don't have access to.")}
 </div>
-
-<div class='actions'>
-  <button class='btn primary' onclick='location.href="/preflight"'>Run preflight →</button>
-</div>
-""",
-            extraScript: """
-fetch('/healthz').then(r => r.json()).then(j => {
-  document.getElementById('stage').textContent = j.stage;
-  document.getElementById('version').textContent = j.version;
-  document.getElementById('boundAt').textContent = j.boundAt;
-}).catch(e => {
-  document.querySelector('.sub').textContent = 'Healthz failed: ' + e.message;
-});
+""", continueText: "Continue →")}
 """);
+
+    public static void ApplyForm(WizardState s, IFormCollection f)
+    {
+        s.Role = Str(f, "role") == "Standby" ? InstallRole.Standby : InstallRole.Primary;
+        s.SentryOptIn = Bool(f, "sentryOptIn");
+        s.LastUpdatedAt = DateTime.UtcNow;
+    }
 }

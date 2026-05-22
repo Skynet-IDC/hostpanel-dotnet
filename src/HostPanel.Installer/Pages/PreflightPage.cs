@@ -60,7 +60,7 @@ would mutate the system is surfaced as a prompt on later pages.</p>
   <div class='actions'>
     <button class='btn' onclick='location.href="/welcome"'>← Back</button>
     <button class='btn' onclick='refresh()'>↻ Re-scan</button>
-    <button id='continue' class='btn primary' onclick='alert("Stage 3 form pages coming in next iteration")'>Continue →</button>
+    <button id='continue' class='btn primary' onclick='location.href = nextHref'>Continue →</button>
   </div>
 </div>
 """,
@@ -68,6 +68,9 @@ would mutate the system is surfaced as a prompt on later pages.</p>
 const $ = s => document.querySelector(s);
 const STATUS_LABEL = { Pass: '✓', Warn: '⚠', Block: '✗' };
 const STATUS_CLASS = { Pass: 'status-pass', Warn: 'status-warn', Block: 'status-block' };
+// Filled from the wizard-state endpoint so primary skips straight to /wizard/database
+// and standby skips straight to /wizard/network.
+let nextHref = '/wizard/database';
 
 // Small DOM-construction helper: el('tag', {class,id,style,title,onclick}, ...children-or-text-or-null)
 function el(tag, attrs, ...children) {
@@ -190,11 +193,14 @@ function render(d) {
     }
   }
 
-  // Continue gate
+  // Continue gate + dynamic next-href from wizard state
   const cont = $('#continue');
   cont.disabled = d.hasAnyBlockers;
   cont.title = d.hasAnyBlockers ? 'Resolve blockers before continuing' : '';
 }
+
+// Fetch wizard state once so the Continue button knows whether to go to /database (primary) or /network (standby).
+fetch('/api/wizard/next?from=preflight').then(r => r.json()).then(j => { nextHref = j.next; }).catch(() => {});
 
 refresh();
 """);

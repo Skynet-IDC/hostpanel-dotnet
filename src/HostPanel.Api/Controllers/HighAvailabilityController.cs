@@ -105,7 +105,7 @@ public class HighAvailabilityController : ControllerBase
 
         // Persist an HaSyncState row so downstream endpoints (/ha/test, /ha/sync-state,
         // /ha/replication-lag's lag persistence, /ha/loadbalancer/*) have a row to find.
-        // Upsert: one row per standby Server.
+        // Upsert: one row per Server.
         var syncState = await _db.Set<HaSyncState>()
             .FirstOrDefaultAsync(s => s.ServerId == standby.Id);
         if (syncState is null)
@@ -118,6 +118,24 @@ public class HighAvailabilityController : ControllerBase
         syncState.SyncFiles = request.SyncDomains;
         syncState.SyncDatabases = request.SyncDatabases;
         syncState.SyncEmail = request.SyncEmail;
+
+        // UI-BUG-012: the primary also needs an HaSyncState row so HaService.FailbackAsync
+        // can locate the current primary via `s.Role == "primary"`. Before this, failover
+        // promoted the standby's row to "primary" but the original primary had no row,
+        // making failback fail with "No current primary found" and stranding the cluster.
+        var primaryState = await _db.Set<HaSyncState>()
+            .FirstOrDefaultAsync(s => s.ServerId == primary.Id);
+        if (primaryState is null)
+        {
+            primaryState = new HaSyncState { ServerId = primary.Id };
+            _db.Set<HaSyncState>().Add(primaryState);
+        }
+        primaryState.Role = "primary";
+        primaryState.SyncDirection = "push";
+        primaryState.SyncFiles = request.SyncDomains;
+        primaryState.SyncDatabases = request.SyncDatabases;
+        primaryState.SyncEmail = request.SyncEmail;
+
         await _db.SaveChangesAsync();
 
         return Ok(new

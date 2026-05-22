@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using HostPanel.Core.DTOs;
 using HostPanel.Core.Enums;
 using HostPanel.Core.Models;
+using HostPanel.Infrastructure.Data;
 using HostPanel.Infrastructure.Services;
 
 namespace HostPanel.Api.Controllers;
@@ -15,15 +17,18 @@ public class AuthController : ControllerBase
     private readonly UserManager<AppUser> _userManager;
     private readonly SignInManager<AppUser> _signInManager;
     private readonly JwtService _jwtService;
+    private readonly AppDbContext _db;
 
     public AuthController(
         UserManager<AppUser> userManager,
         SignInManager<AppUser> signInManager,
-        JwtService jwtService)
+        JwtService jwtService,
+        AppDbContext db)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _jwtService = jwtService;
+        _db = db;
     }
 
     [HttpPost("login")]
@@ -36,6 +41,40 @@ public class AuthController : ControllerBase
         var result = await _signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);
         if (!result.Succeeded)
             return Unauthorized(new { message = "Invalid credentials" });
+
+        // UI-BUG-014: enforce 2FA when the user has a verified TOTP token. Before this,
+        // Login issued a JWT on password alone so 2FA enrollment was cosmetic. Flow:
+        //   1. Missing/empty Totp + enabled 2FA → 401 with requires2fa=true so the UI
+        //      can pivot to a TOTP prompt and resubmit.
+        //   2. Provided Totp → validate against the saved secret OR consume one of the
+        //      stored recovery codes (single-use, removed from the JSON array on hit).
+        //   3. Invalid Totp → 401 with requires2fa=true so the prompt stays open.
+        var totpToken = await _db.Set<TotpToken>()
+            .FirstOrDefaultAsync(t => t.UserId == user.Id && t.IsVerified);
+        if (totpToken is not null)
+        {
+            if (string.IsNullOrWhiteSpace(request.Totp))
+                return Unauthorized(new { message = "TOTP code required", requires2fa = true });
+
+            var totpOk = TotpHelper.ValidateTotp(totpToken.SecretKey, request.Totp);
+            if (!totpOk && !string.IsNullOrEmpty(totpToken.RecoveryCodes))
+            {
+                try
+                {
+                    var codes = System.Text.Json.JsonSerializer
+                        .Deserialize<List<string>>(totpToken.RecoveryCodes) ?? new List<string>();
+                    if (codes.Remove(request.Totp))
+                    {
+                        totpToken.RecoveryCodes = System.Text.Json.JsonSerializer.Serialize(codes);
+                        await _db.SaveChangesAsync();
+                        totpOk = true;
+                    }
+                }
+                catch { /* fall through to failure */ }
+            }
+            if (!totpOk)
+                return Unauthorized(new { message = "Invalid TOTP code", requires2fa = true });
+        }
 
         var token = _jwtService.GenerateToken(user);
         var refreshToken = _jwtService.GenerateRefreshToken();

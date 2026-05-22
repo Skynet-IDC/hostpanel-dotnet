@@ -63,7 +63,24 @@ export function FilesPage() {
       });
       await load();
     } catch (e2) {
-      const msg = e2 && typeof e2 === 'object' && 'response' in e2 ? (e2 as { response?: { data?: { message?: string } } }).response?.data?.message : null;
+      // UI-BUG-010: response body may be JSON ({message, diskQuotaMb, currentUsageMb,
+      // fileSizeMb} from FilesController.Upload's quota 413) OR the stock nginx HTML
+      // 413 if the file is larger than client_max_body_size. Walk both shapes so the
+      // operator sees something actionable instead of a generic "Upload failed".
+      const resp = e2 && typeof e2 === 'object' && 'response' in e2
+        ? (e2 as { response?: { status?: number; data?: unknown } }).response
+        : null;
+      const data = resp?.data;
+      let msg: string | null = null;
+      if (data && typeof data === 'object' && 'message' in data) {
+        const d = data as { message?: string; diskQuotaMb?: number; currentUsageMb?: number; fileSizeMb?: number };
+        msg = d.message ?? null;
+        if (msg && d.diskQuotaMb && d.currentUsageMb !== undefined && d.fileSizeMb !== undefined)
+          msg = `${msg} (${Math.round(d.currentUsageMb)} + ${Math.round(d.fileSizeMb)} > ${d.diskQuotaMb} MB)`;
+      } else if (typeof data === 'string') {
+        msg = data.match(/<title>([^<]+)<\/title>/i)?.[1] ?? null;
+      }
+      if (!msg && resp?.status === 413) msg = 'File too large for this server';
       alert(msg ?? 'Upload failed');
     } finally {
       e.target.value = '';

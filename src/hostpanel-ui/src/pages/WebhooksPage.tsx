@@ -6,12 +6,28 @@ import { Icons } from '../components/ui/Icons';
 interface Webhook {
   id: number;
   url: string;
+  // UI-BUG-016: backend stores `Events` as a CSV string ("a,b,c") or "*" for all.
+  // We normalize to string[] right after the fetch so the rest of this page can
+  // continue to treat events as an array; submit() re-CSV's on the way out.
   events: string[];
   secret?: string;
-  active: boolean;
-  lastTriggered?: string | null;
+  isActive: boolean;
+  lastTriggeredAt?: string | null;
   failureCount?: number;
-  lastFailure?: string | null;
+  lastFailureAt?: string | null;
+}
+
+// Raw webhook shape returned by /api/v1/webhooks before we splat `events` into a
+// string[]. Kept narrow so the rest of the page works against the cleaned-up Webhook.
+interface WebhookRaw {
+  id: number;
+  url: string;
+  events: string;
+  secret?: string;
+  isActive: boolean;
+  lastTriggeredAt?: string | null;
+  failureCount?: number;
+  lastFailureAt?: string | null;
 }
 
 const FALLBACK_EVENTS = [
@@ -62,8 +78,13 @@ export function WebhooksPage() {
   const load = async () => {
     setErr(null);
     try {
-      const { data } = await api.get<Webhook[]>('/webhooks');
-      setWebhooks(data);
+      const { data } = await api.get<WebhookRaw[]>('/webhooks');
+      setWebhooks(data.map(raw => ({
+        ...raw,
+        events: raw.events === '*'
+          ? availableEvents
+          : (raw.events || '').split(',').map(s => s.trim()).filter(Boolean),
+      })));
     } catch (e) { setErr(e instanceof Error ? e.message : 'Load failed'); }
     finally { setLoading(false); }
   };
@@ -150,10 +171,10 @@ export function WebhooksPage() {
                         {w.events.length > 3 && <Badge>+{w.events.length - 3}</Badge>}
                       </div>
                     </td>
-                    <td className="muted mono" style={{ fontSize: 11.5 }}>{w.lastTriggered ? new Date(w.lastTriggered).toLocaleString() : 'Never'}</td>
+                    <td className="muted mono" style={{ fontSize: 11.5 }}>{w.lastTriggeredAt ? new Date(w.lastTriggeredAt).toLocaleString() : 'Never'}</td>
                     <td>
                       <div className="row gap-1" style={{ flexWrap: 'wrap' }}>
-                        <StatusBadge status={w.active ? (w.failureCount && w.failureCount > 0 ? 'warn' : 'active') : 'disabled'} />
+                        <StatusBadge status={w.isActive ? (w.failureCount && w.failureCount > 0 ? 'warn' : 'active') : 'disabled'} />
                         {w.failureCount !== undefined && w.failureCount > 0 && (
                           <Badge tone="danger">{w.failureCount} fail{w.failureCount === 1 ? '' : 's'}</Badge>
                         )}
@@ -226,7 +247,7 @@ function Form({ open, onClose, initial, onSaved, availableEvents }: { open: bool
     setUrl(initial?.url ?? '');
     setEvents(initial?.events ?? ['domain.created']);
     setSecret(initial?.secret ?? '');
-    setActive(initial?.active ?? true);
+    setActive(initial?.isActive ?? true);
     setErr(null);
   }, [open, initial]);
 
@@ -235,7 +256,16 @@ function Form({ open, onClose, initial, onSaved, availableEvents }: { open: bool
   const submit = async () => {
     setBusy(true); setErr(null);
     try {
-      const body = { url, events, secret: secret || undefined, active };
+      // UI-BUG-016: backend CreateWebhookRequest expects `events` as a CSV string
+      // (e.g. "domain.created,invoice.paid") or "*" for all events. Sending the raw
+      // string[] from the checkbox grid produced a 400 with no clue why.
+      const allChecked = events.length === availableEvents.length && availableEvents.length > 0;
+      const body = {
+        url,
+        events: allChecked ? '*' : events.join(','),
+        secret: secret || undefined,
+        isActive: active,
+      };
       if (initial) await api.put(`/webhooks/${initial.id}`, body);
       else await api.post('/webhooks', body);
       onSaved();

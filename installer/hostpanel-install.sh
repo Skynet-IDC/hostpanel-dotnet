@@ -800,6 +800,12 @@ server {
     ssl_certificate /etc/hostpanel/ssl/panel.pem;
     ssl_certificate_key /etc/hostpanel/ssl/panel.key;
 
+    # File-manager uploads need to reach the .NET app-layer quota enforcement
+    # in FilesController.Upload. Default nginx limit (1m) would block these at
+    # the proxy with cryptic HTML 413 before the controller can return the
+    # structured "Disk quota exceeded." JSON. 1g keeps room for site archives.
+    client_max_body_size 1g;
+
     # API
     location /api/ {
         proxy_pass http://127.0.0.1:5000;

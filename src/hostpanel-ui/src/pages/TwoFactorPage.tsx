@@ -6,6 +6,10 @@ import { Icons } from '../components/ui/Icons';
 interface TwoFaStatus {
   enabled: boolean;
   enrolledAt?: string | null;
+  // Backend field is `recoveryCodesRemaining` (the live count of unused codes).
+  // The older `recoveryCodesIssued` name is kept as a fallback for compat with
+  // any forward/backward deploy mismatch.
+  recoveryCodesRemaining?: number;
   recoveryCodesIssued?: number;
 }
 
@@ -60,10 +64,15 @@ export function TwoFactorPage() {
   };
 
   const disable = async () => {
+    // UI-BUG-015: backend Disable handler requires a body `{code:"123456"}` and rejects
+    // empty bodies with 415. Prompt for the current TOTP (or a recovery code) so we can
+    // POST the verified payload axios needs as the DELETE body.
     if (!confirm('Disable two-factor authentication? Your account will rely on password only.')) return;
+    const code = window.prompt('Enter the current 6-digit code from your authenticator (or a recovery code) to confirm:');
+    if (!code) return;
     setBusy(true); setErr(null);
     try {
-      await api.delete('/auth/2fa');
+      await api.delete('/auth/2fa', { data: { code: code.trim() } });
       await load();
     } catch (e) {
       const msg = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response?.data?.message : null;
@@ -110,7 +119,7 @@ export function TwoFactorPage() {
           <div className="stats" style={{ marginBottom: 16 }}>
             <Stat label="Status" icon="shieldCheck" value="Enabled" foot={<span className="muted">required at every sign-in</span>} />
             <Stat label="Enrolled" icon="history" value={status.enrolledAt ? new Date(status.enrolledAt).toLocaleDateString() : '—'} />
-            <Stat label="Recovery codes" icon="key" value={String(status.recoveryCodesIssued ?? 0)} foot={<span className="muted">remaining</span>} />
+            <Stat label="Recovery codes" icon="key" value={String(status.recoveryCodesRemaining ?? status.recoveryCodesIssued ?? 0)} foot={<span className="muted">remaining</span>} />
           </div>
           <Card title="Disable" sub="Removing 2FA leaves your account password-only. Don't do this on a shared machine.">
             <button className="btn danger" onClick={disable} disabled={busy}><Icons.lockOpen />Disable 2FA</button>

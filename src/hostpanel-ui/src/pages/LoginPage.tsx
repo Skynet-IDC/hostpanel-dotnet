@@ -13,6 +13,8 @@ export function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [totp, setTotp] = useState('');
+  const [requires2fa, setRequires2fa] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [sso, setSso] = useState<SsoConfig | null>(null);
@@ -55,18 +57,27 @@ export function LoginPage() {
         navigate('/');
         return;
       }
-      const res = await login({ email, password });
+      const res = await login(requires2fa ? { email, password, totp } : { email, password });
       setAuth(res.token, res.user);
       navigate('/');
     } catch (e) {
-      const msg = e && typeof e === 'object' && 'response' in e
-        ? (e as { response?: { data?: { error?: string; errors?: string[] } } }).response?.data
+      const data = e && typeof e === 'object' && 'response' in e
+        ? (e as { response?: { data?: { error?: string; errors?: string[]; message?: string; requires2fa?: boolean } } }).response?.data
         : null;
-      setError(
-        (msg?.errors && msg.errors[0]) ||
-        msg?.error ||
-        (isBootstrap ? 'Admin creation failed — try a stronger password' : 'Invalid email or password')
-      );
+      // UI-BUG-014: backend signals "show the TOTP prompt" via requires2fa=true.
+      if (data?.requires2fa) {
+        setRequires2fa(true);
+        // If the user already submitted a code that failed, surface that; otherwise
+        // suppress the misleading "Invalid email or password" message.
+        setError(totp ? (data.message || 'Invalid TOTP code') : '');
+      } else {
+        setError(
+          (data?.errors && data.errors[0]) ||
+          data?.error ||
+          data?.message ||
+          (isBootstrap ? 'Admin creation failed — try a stronger password' : 'Invalid email or password')
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -162,8 +173,27 @@ export function LoginPage() {
               />
             </div>
           )}
+          {requires2fa && !isBootstrap && (
+            <div className="field">
+              <label htmlFor="totp">Two-factor code</label>
+              <input
+                id="totp"
+                className="input mono"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                value={totp}
+                onChange={e => setTotp(e.target.value.trim())}
+                required
+                placeholder="6-digit code or recovery code"
+              />
+            </div>
+          )}
           <button type="submit" className="btn primary" disabled={loading} style={{ marginTop: 4 }}>
-            {loading ? (isBootstrap ? 'Creating…' : 'Signing in…') : (isBootstrap ? 'Create admin account' : 'Sign in')}
+            {loading
+              ? (isBootstrap ? 'Creating…' : 'Signing in…')
+              : (isBootstrap ? 'Create admin account' : (requires2fa ? 'Verify and sign in' : 'Sign in'))}
           </button>
 
           {!isBootstrap && sso?.enabled && sso.loginUrl && (

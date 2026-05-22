@@ -20,6 +20,9 @@ export interface AuthResponse {
 export interface LoginRequest {
   email: string;
   password: string;
+  // Optional TOTP (or single-use recovery code), sent when the backend has previously
+  // responded with requires2fa=true (UI-BUG-014).
+  totp?: string;
 }
 
 export interface ServerStats {

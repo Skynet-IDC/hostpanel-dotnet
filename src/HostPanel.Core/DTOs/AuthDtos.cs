@@ -2,7 +2,7 @@ using HostPanel.Core.Enums;
 
 namespace HostPanel.Core.DTOs;
 
-public record LoginRequest(string Email, string Password);
+public record LoginRequest(string Email, string Password, string? Totp = null);
 
 public record RegisterRequest(
     string Email,

@@ -175,7 +175,7 @@ export function SubscriptionsPage() {
                         <span>{company}</span>
                       </div>
                     </td>
-                    <td>{plan?.name ?? '—'}</td>
+                    <td>{plan?.name ?? s.servicePlanName ?? '—'}</td>
                     <td style={{ width: 140 }}>
                       <Meter value={0} total={plan?.diskQuotaMb ?? 1024} hideText />
                     </td>

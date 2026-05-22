@@ -15,6 +15,10 @@ export interface PanelSubscription {
   id: number;
   userId: string;
   servicePlanId: number;
+  // Backend always returns this; surfaces in UI as fallback when servicePlanId
+  // points at a custom (per-customer) plan that isn't in the global /serviceplans
+  // list — without it the Subscriptions table renders '—' for those rows.
+  servicePlanName?: string;
   status: string;
   createdAt: string;
   systemUsername?: string;

@@ -423,9 +423,51 @@ scache    unix  -       -       y       -       1       scache
 postlog   unix-dgram n  -       n       -       1       postlogd
 MASTER_CF
 
-    # Reload Postfix with new config
-    systemctl restart postfix
-    log_info "Mail server installed with multi-port SMTP"
+    # BUG-008: Postfix's submission/smtps need a SASL backend. Wire Dovecot's auth socket.
+    # The socket lives inside Postfix's chroot at /var/spool/postfix/private/auth so postfix
+    # can read it even with chroot enabled (default on Ubuntu).
+    log_info "Configuring Dovecot SASL socket for Postfix submission..."
+    mkdir -p /etc/dovecot/conf.d
+    cat > /etc/dovecot/conf.d/10-master.conf <<'DOVECOT_MASTER'
+service auth {
+  unix_listener /var/spool/postfix/private/auth {
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+  unix_listener auth-userdb {
+    mode = 0600
+    user = vmail
+  }
+  user = root
+}
+
+service auth-worker {
+  user = vmail
+}
+
+service lmtp {
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    mode = 0600
+    user = postfix
+    group = postfix
+  }
+}
+DOVECOT_MASTER
+
+    # Point Postfix at Dovecot SASL backend
+    postconf -e "smtpd_sasl_type=dovecot"
+    postconf -e "smtpd_sasl_path=private/auth"
+    postconf -e "smtpd_sasl_local_domain="
+    postconf -e "broken_sasl_auth_clients=yes"
+    # Use Dovecot LMTP for local delivery into virtual mailboxes
+    postconf -e "virtual_transport=lmtp:unix:private/dovecot-lmtp"
+
+    # Restart both — order matters (dovecot must be up before postfix starts using its socket)
+    systemctl restart dovecot 2>&1 | tail -2 || log_warn "Dovecot restart failed"
+    sleep 2
+    systemctl restart postfix 2>&1 | tail -2 || log_warn "Postfix restart failed"
+    log_info "Mail server installed with multi-port SMTP + Dovecot SASL"
 }
 
 # Install PowerDNS
@@ -807,6 +849,12 @@ configure_sudoers() {
     echo 'www-data ALL=(postgres) NOPASSWD: /usr/bin/psql,/usr/bin/createdb' \
         > /etc/sudoers.d/hostpanel-pg
     chmod 440 /etc/sudoers.d/hostpanel-pg
+
+    # BUG-009: Allow API (www-data) to run mysql as root, matching the PostgreSQL pattern.
+    # Ubuntu 24.04 installs MySQL root with auth_socket (peer) — no password works, only sudo.
+    echo 'www-data ALL=(root) NOPASSWD: /usr/bin/mysql,/usr/bin/mysqldump' \
+        > /etc/sudoers.d/hostpanel-mysql
+    chmod 440 /etc/sudoers.d/hostpanel-mysql
 
     # Allow the API (www-data) to drop privileges to any unix user when invoking
     # the Claude Code CLI. ClaudeController validates the tenant username against

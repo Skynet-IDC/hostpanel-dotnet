@@ -75,26 +75,28 @@ public class MySqlProvisioner : IDbProvisioningService
         return [];
     }
 
+    // Ubuntu 24.04's mysql-server installs root with auth_socket (peer auth), no password.
+    // Mirror PostgreSQL pattern: run mysql via `sudo -u root mysql` so peer auth works.
+    // Requires sudoers entry: www-data ALL=(root) NOPASSWD: /usr/bin/mysql
+    // (written by installer to /etc/sudoers.d/hostpanel-mysql)
     private async Task ExecuteMySqlAsync(string sql, CancellationToken ct)
     {
-        var args = new List<string> { $"-h{_host}", $"-u{_rootUser}" };
-        if (!string.IsNullOrEmpty(_rootPassword))
-            args.Add($"-p{_rootPassword}");
-        args.Add("-e");
-        args.Add(sql);
-
         using var process = new System.Diagnostics.Process
         {
             StartInfo = new System.Diagnostics.ProcessStartInfo
             {
-                FileName = "/usr/bin/mysql",
+                FileName = "/usr/bin/sudo",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false
             }
         };
-        foreach (var arg in args)
-            process.StartInfo.ArgumentList.Add(arg);
+        process.StartInfo.ArgumentList.Add("-n");
+        process.StartInfo.ArgumentList.Add("-u");
+        process.StartInfo.ArgumentList.Add("root");
+        process.StartInfo.ArgumentList.Add("/usr/bin/mysql");
+        process.StartInfo.ArgumentList.Add("-e");
+        process.StartInfo.ArgumentList.Add(sql);
 
         process.Start();
         await process.WaitForExitAsync(ct);

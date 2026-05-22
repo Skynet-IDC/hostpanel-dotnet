@@ -189,8 +189,15 @@ builder.Services.AddScoped<HaService>();
 builder.Services.AddHostedService<HaHealthMonitorService>();
 
 // Controllers + SignalR
+// BUG-007 fix: PascalCase controllers like ServicePlansController generate routes at
+// /api/v1/ServicePlans. Add a convention that ALSO registers a kebab-case alias
+// (/api/v1/service-plans) so scripted REST callers using either work.
 builder.Services.AddScoped<HostPanel.Api.Middleware.AuditLogFilter>();
-builder.Services.AddControllers(o => o.Filters.Add<HostPanel.Api.Middleware.AuditLogFilter>())
+builder.Services.AddControllers(o =>
+    {
+        o.Filters.Add<HostPanel.Api.Middleware.AuditLogFilter>();
+        o.Conventions.Add(new HostPanel.Api.Middleware.KebabCaseControllerRouteConvention());
+    })
     .AddJsonOptions(o => o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddSignalR();
 
@@ -265,6 +272,38 @@ using (var scope = app.Services.CreateScope())
         var result = await userManager.CreateAsync(admin, configuredPassword);
         if (result.Succeeded)
             await userManager.AddToRoleAsync(admin, UserRole.Admin.ToString());
+    }
+
+    // BUG-011 fix: seed a self-Server row with IsLocal=true so HA configure-failover
+    // can find the primary. Idempotent — only creates if no IsLocal row exists.
+    var hasLocalServer = await db.Set<HostPanel.Core.Models.Server>().AnyAsync(s => s.IsLocal);
+    if (!hasLocalServer)
+    {
+        var hostname = System.Net.Dns.GetHostName();
+        string ipAddress = "127.0.0.1";
+        try
+        {
+            ipAddress = System.Net.Dns.GetHostAddresses(hostname)
+                .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                            && !System.Net.IPAddress.IsLoopback(a))
+                .Select(a => a.ToString())
+                .FirstOrDefault() ?? "127.0.0.1";
+        }
+        catch { /* fall through to loopback */ }
+
+        db.Set<HostPanel.Core.Models.Server>().Add(new HostPanel.Core.Models.Server
+        {
+            Hostname = hostname,
+            IpAddress = ipAddress,
+            AgentPort = 50051,
+            AgentToken = builder.Configuration["Agent:Token"] ?? "",
+            ServerGroup = "primary",
+            IsLocal = true,
+            IsActive = true,
+            IsHealthy = true,
+            LastHealthCheck = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
     }
 }
 

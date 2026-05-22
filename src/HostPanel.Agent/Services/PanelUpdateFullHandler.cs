@@ -233,17 +233,37 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
             }
             if (agentChanged || string.IsNullOrEmpty(oldRev))
             {
+                // Schedule the agent self-restart via systemd-run so the restart
+                // command escapes the agent's cgroup. The old approach (`bash -c
+                // "sleep 3 && systemctl restart"` as a child of the agent) got
+                // killed when systemd terminated the agent's cgroup during restart,
+                // before the bash sleep finished — so the restart never fired and
+                // the agent kept running the old binary. Symptom: "Agent self-restart
+                // scheduled" logged, but `ls /proc/$(pgrep agent)/exe` pointed at the
+                // pre-update binary. Hit 2026-05-22 deploying the F5 fix.
+                //
+                // `systemd-run --no-block --collect --unit <name>` creates a
+                // transient .service unit owned by systemd PID 1, not the agent's
+                // cgroup. The unit survives the agent's death, fires the restart
+                // after 3s, then is garbage-collected.
+                var unitName = $"hostpanel-agent-restart-{Guid.NewGuid():N}";
                 using var p = new System.Diagnostics.Process();
-                p.StartInfo = new System.Diagnostics.ProcessStartInfo("/bin/bash",
-                    "-c \"sleep 3 && systemctl restart hostpanel-agent\"")
+                p.StartInfo = new System.Diagnostics.ProcessStartInfo("/usr/bin/systemd-run")
                 {
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = false,
                     RedirectStandardError = false
                 };
+                p.StartInfo.ArgumentList.Add("--no-block");
+                p.StartInfo.ArgumentList.Add("--collect");
+                p.StartInfo.ArgumentList.Add("--unit");
+                p.StartInfo.ArgumentList.Add(unitName);
+                p.StartInfo.ArgumentList.Add("/bin/bash");
+                p.StartInfo.ArgumentList.Add("-c");
+                p.StartInfo.ArgumentList.Add("sleep 3 && systemctl restart hostpanel-agent");
                 p.Start();
-                log.Add("Agent self-restart scheduled");
+                log.Add($"Agent self-restart scheduled via systemd-run (transient unit: {unitName})");
                 await Task.Delay(1000, ct);
             }
             else

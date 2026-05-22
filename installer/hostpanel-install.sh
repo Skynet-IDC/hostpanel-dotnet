@@ -593,6 +593,12 @@ deploy_hostpanel() {
         rm -rf "$SOURCE_DIR"
         git clone --depth 1 --branch "$GIT_REF" "$GIT_REPO" "$SOURCE_DIR" \
             || { log_error "git clone failed: $GIT_REPO@$GIT_REF"; exit 1; }
+        # Mark the source dir as safe for root regardless of who originally cloned it.
+        # Without this, the agent's panel.update handler (running as root) can fail
+        # with "fatal: detected dubious ownership" on subsequent git operations if
+        # the dir was ever touched by a non-root user — hit during F3 development
+        # on 2026-05-22. Idempotent + harmless on a fresh box.
+        git config --global --add safe.directory "$SOURCE_DIR" 2>/dev/null || true
         log_info "Cloned $(git -C "$SOURCE_DIR" rev-parse --short HEAD) into $SOURCE_DIR"
     fi
 

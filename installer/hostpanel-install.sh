@@ -260,8 +260,12 @@ install_mssql() {
     # failed install), mssql-server is already started and `mssql-conf setup`
     # refuses with "An instance of SQL Server is running. Please stop the SQL
     # Server service" — silently busy-looping. Detect prior config and skip.
-    if [[ -f /var/opt/mssql/mssql.conf ]] && grep -q "^\[sqlagent\]" /var/opt/mssql/mssql.conf 2>/dev/null; then
-        log_info "mssql-conf already configured (re-run detected) — skipping setup"
+    # NOTE: do NOT check /var/opt/mssql/mssql.conf — the apt postinst creates that
+    # file with default [sqlagent] section before mssql-conf setup runs, so the
+    # file existing is NOT proof of setup. The proof is master.mdf existing in /var/opt/mssql/data
+    # (mssql-conf setup is what creates it).
+    if [[ -f /var/opt/mssql/data/master.mdf ]]; then
+        log_info "mssql-conf already configured (master.mdf present) — skipping setup"
     else
         # If mssql-server is running but unconfigured, stop it so mssql-conf can take over.
         if systemctl is-active --quiet mssql-server; then

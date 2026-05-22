@@ -26,7 +26,7 @@ export function TwoFactorPage() {
   const load = async () => {
     setErr(null);
     try {
-      const { data } = await api.get<TwoFaStatus>('/auth/2fa');
+      const { data } = await api.get<TwoFaStatus>('/auth/2fa/status');
       setStatus(data);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Failed to load 2FA status');

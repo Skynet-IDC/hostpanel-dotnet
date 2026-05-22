@@ -37,13 +37,29 @@ export function DatabasesPage() {
   useEffect(() => {
     (async () => {
       try {
-        const t = await api.get<string[] | { types?: string[] }>('/databases/types');
-        const list = Array.isArray(t.data) ? t.data : (t.data?.types ?? []);
+        // /databases/types returns the enum-with-numeric-value shape
+        // [{type:"MsSql",value:0}, ...]; older builds returned bare string[]
+        // or {types:string[]}. Normalize all three into plain string[].
+        const t = await api.get<Array<{ type?: string; value?: number }> | string[] | { types?: string[] }>('/databases/types');
+        const raw = Array.isArray(t.data) ? t.data : (t.data?.types ?? []);
+        const list: string[] = (raw as Array<unknown>).map(x =>
+          typeof x === 'string' ? x : ((x as { type?: string })?.type ?? '')
+        ).filter(Boolean);
         setSupportedTypes(list);
       } catch { /* fall through */ }
       try {
-        const s = await api.get<DbStatus[] | { engines?: DbStatus[] }>('/databases/status');
-        const list = Array.isArray(s.data) ? s.data : (s.data?.engines ?? []);
+        // /databases/status returns [{engine, available, ...}]; older builds
+        // used {type, available}. Adapt to the local DbStatus shape which
+        // keys on `type`.
+        const s = await api.get<Array<{ engine?: string; type?: string; available?: boolean; serviceActive?: boolean; version?: string }> | { engines?: unknown[] }>('/databases/status');
+        const raw: Array<{ engine?: string; type?: string; available?: boolean; serviceActive?: boolean; version?: string }> =
+          Array.isArray(s.data) ? s.data : ((s.data?.engines ?? []) as Array<{ engine?: string; type?: string; available?: boolean; serviceActive?: boolean; version?: string }>);
+        const list: DbStatus[] = raw.map(x => ({
+          type: x.engine ?? x.type ?? '',
+          available: x.available ?? false,
+          serviceActive: x.serviceActive,
+          version: x.version,
+        }));
         setEngineStatus(list);
       } catch { /* fall through */ }
     })();

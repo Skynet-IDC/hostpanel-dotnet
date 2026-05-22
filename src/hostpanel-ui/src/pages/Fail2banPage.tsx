@@ -13,8 +13,14 @@ interface Jail {
 }
 
 interface Status {
-  enabled: boolean;
-  jails: Jail[];
+  enabled?: boolean;
+  jails?: Jail[];
+  // Backend currently returns the raw fail2ban-client text output and an error string,
+  // not the structured {enabled, jails} shape. Both shapes are accepted so this page
+  // survives whatever the agent passes through. Long term: agent handler should parse
+  // the text into structured data.
+  output?: string;
+  error?: string;
 }
 
 export function Fail2banPage() {
@@ -44,8 +50,15 @@ export function Fail2banPage() {
     }
   };
 
-  const totalBanned = status?.jails.reduce((s, j) => s + j.currentlyBanned, 0) ?? 0;
-  const totalJails = status?.jails.length ?? 0;
+  // Both optional-chains guard the .jails access — backend may return {output, error}
+  // instead of {enabled, jails}, in which case status.jails is undefined and naive
+  // status?.jails.reduce(...) would crash on undefined.reduce.
+  const totalBanned = status?.jails?.reduce((s, j) => s + j.currentlyBanned, 0) ?? 0;
+  const totalJails = status?.jails?.length ?? 0;
+  // If we got the raw {output} shape, fall back to a "running but no structured data"
+  // view so the page renders and the operator can at least see the agent output.
+  const hasRawOutput = !!status?.output && !status?.jails;
+  const runningFromRaw = hasRawOutput && /jail/i.test(status?.output ?? '');
 
   return (
     <>
@@ -58,6 +71,12 @@ export function Fail2banPage() {
       {err && <div className="alert danger" style={{ marginBottom: 12 }}><Icons.alert />{err}</div>}
 
       {loading ? <Card><div className="muted" style={{ padding: 8 }}>Loading…</div></Card>
+        : hasRawOutput ? (
+            <Card title="Fail2ban (raw output)" sub={runningFromRaw ? 'Running — agent did not return structured jail data' : 'Agent returned text output only'}>
+              <pre style={{ fontFamily: 'monospace', fontSize: 12, whiteSpace: 'pre-wrap', margin: 0 }}>{status?.output}</pre>
+              {status?.error && <div className="muted" style={{ marginTop: 8, fontSize: 12 }}>stderr: {status.error}</div>}
+            </Card>
+          )
         : !status?.enabled ? <Card><Empty icon="shieldCheck" title="Fail2ban not running" sub="Install + enable fail2ban on the host to activate auto-banning." /></Card>
         : (
           <>
@@ -67,7 +86,7 @@ export function Fail2banPage() {
               <Stat label="Currently banned" icon="bug" value={String(totalBanned)} foot={<span className="muted">across all jails</span>} />
             </div>
 
-            {status.jails.map(j => (
+            {(status?.jails ?? []).map(j => (
               <Card key={j.name} title={j.name} sub={`${j.totalFailed} total failures · ${j.totalBanned} total bans`} flush style={{ marginBottom: 12 }}>
                 {j.bannedIps.length === 0 ? (
                   <div className="muted" style={{ padding: 16, textAlign: 'center', fontSize: 12 }}>No active bans</div>

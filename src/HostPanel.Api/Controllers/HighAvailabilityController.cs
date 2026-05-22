@@ -644,6 +644,7 @@ public class HighAvailabilityController : ControllerBase
     /// F3 web installer: issue a single-use 15-minute pairing token a fresh standby
     /// can present to /ha/register-standby. Admin-only — the token is the credential the
     /// anonymous register-standby call uses, so it must only be handed to a trusted operator.
+    /// Example: panel UI → Settings → HA → Generate pairing token, paste into installer wizard.
     /// </summary>
     [HttpPost("pairing-token")]
     public async Task<IActionResult> CreatePairingToken([FromBody] CreatePairingTokenRequest? request = null)

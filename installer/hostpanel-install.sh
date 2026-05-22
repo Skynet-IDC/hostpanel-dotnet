@@ -97,33 +97,44 @@ preflight_checks() {
 
 # Install base dependencies
 install_base() {
-    # Stop + temporarily mask unattended-upgrades so it doesn't race with our apt
-    # invocations. The 5-minute DPkg::Lock::Timeout below catches direct apt calls
-    # but THIRD-PARTY postinst scripts (e.g. packages-microsoft-prod) shell out to
-    # apt-get without inheriting our apt.conf.d settings and just fail. Disabling
-    # the unattended-upgrades unit entirely prevents the race.
-    log_info "Disabling unattended-upgrades for install duration..."
-    systemctl stop unattended-upgrades.service 2>/dev/null || true
-    systemctl mask unattended-upgrades.service 2>/dev/null || true
-    # Wait for in-flight unattended-upgrade to finish NATURALLY — killing it leaves dpkg in
-    # 'interrupted' state and the next apt-get bails with "dpkg was interrupted, you must
-    # manually run 'sudo dpkg --configure -a' to correct the problem".
-    # Give it up to 10 minutes to drain. If still running after that, force-kill and clean up.
-    local UPK=0
-    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-        if ! pgrep -f unattended-upgrade >/dev/null; then break; fi
-        log_info "Waiting for in-flight unattended-upgrade to finish (${i}0s/200s)..."
-        sleep 30
-        UPK=$i
+    # Ubuntu cloud-init first-boot has THREE separate things running apt in the background:
+    #   1. unattended-upgrades.service (security updates)
+    #   2. apt-daily.service           (list refresh — triggered by apt-daily.timer)
+    #   3. apt-daily-upgrade.service   (upgrade install — triggered by apt-daily-upgrade.timer)
+    # All three hold one of /var/lib/apt/lists/lock, /var/lib/dpkg/lock, or
+    # /var/lib/dpkg/lock-frontend at various points. THIRD-PARTY postinst scripts
+    # (e.g. packages-microsoft-prod) shell out to apt-get without honoring our
+    # DPkg::Lock::Timeout setting, so we must guarantee no contender is running.
+    #
+    # Strategy: stop + mask all 3 service units AND their timers, then wait for
+    # any in-flight process to drain NATURALLY (killing mid-txn corrupts dpkg state).
+    # Reconcile dpkg afterwards as belt-and-suspenders.
+    log_info "Disabling apt background services for install duration..."
+    for unit in unattended-upgrades.service apt-daily.service apt-daily-upgrade.service \
+                apt-daily.timer apt-daily-upgrade.timer; do
+        systemctl stop "$unit" 2>/dev/null || true
+        systemctl mask "$unit" 2>/dev/null || true
     done
-    if pgrep -f unattended-upgrade >/dev/null; then
-        log_warn "unattended-upgrade still running after 10 min — force-killing"
-        pkill -9 -f unattended-upgrade 2>/dev/null || true
+
+    # Wait up to 10 minutes for any in-flight apt/dpkg process to drain naturally.
+    log_info "Waiting for any in-flight apt/dpkg process to finish (up to 10 min)..."
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if ! pgrep -f 'apt-get|unattended-upgrade|dpkg ' >/dev/null \
+           && ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null; then
+            break
+        fi
+        log_info "Still waiting for apt to settle (${i}0s/200s)..."
+        sleep 30
+    done
+    # If anything is still hanging after 10 min, force-kill — better than infinite wait.
+    if pgrep -f 'apt-get|unattended-upgrade' >/dev/null; then
+        log_warn "Apt processes still running after 10 min — force-killing"
+        pkill -9 -f 'apt-get|unattended-upgrade' 2>/dev/null || true
         sleep 2
-        fuser -k /var/lib/dpkg/lock-frontend 2>/dev/null || true
+        fuser -k /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock 2>/dev/null || true
         sleep 2
     fi
-    # Whether we waited or killed, always reconcile dpkg state to recover from any half-done txn.
+    # Always reconcile dpkg state to recover from any half-done txn.
     log_info "Reconciling dpkg state (dpkg --configure -a)..."
     DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>&1 | tail -5 || true
 
@@ -894,9 +905,12 @@ main() {
     configure_firewall
     start_hostpanel
 
-    # Re-enable unattended-upgrades (disabled at start to avoid dpkg-lock races).
-    systemctl unmask unattended-upgrades.service 2>/dev/null || true
-    systemctl enable --now unattended-upgrades.service 2>/dev/null || true
+    # Re-enable apt background services (disabled at start to avoid dpkg-lock races).
+    for unit in unattended-upgrades.service apt-daily.service apt-daily-upgrade.service \
+                apt-daily.timer apt-daily-upgrade.timer; do
+        systemctl unmask "$unit" 2>/dev/null || true
+    done
+    systemctl enable --now unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 
     local PANEL_IP
     PANEL_IP=$(hostname -I | awk '{print $1}')

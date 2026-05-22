@@ -103,11 +103,29 @@ public class HighAvailabilityController : ControllerBase
             }
         });
 
+        // Persist an HaSyncState row so downstream endpoints (/ha/test, /ha/sync-state,
+        // /ha/replication-lag's lag persistence, /ha/loadbalancer/*) have a row to find.
+        // Upsert: one row per standby Server.
+        var syncState = await _db.Set<HaSyncState>()
+            .FirstOrDefaultAsync(s => s.ServerId == standby.Id);
+        if (syncState is null)
+        {
+            syncState = new HaSyncState { ServerId = standby.Id };
+            _db.Set<HaSyncState>().Add(syncState);
+        }
+        syncState.Role = "standby";
+        syncState.SyncDirection = "pull";
+        syncState.SyncFiles = request.SyncDomains;
+        syncState.SyncDatabases = request.SyncDatabases;
+        syncState.SyncEmail = request.SyncEmail;
+        await _db.SaveChangesAsync();
+
         return Ok(new
         {
             success = result.IsSuccess,
             primary = primary.Hostname,
             standby = standby.Hostname,
+            haSyncStateId = syncState.Id,
             message = "Failover configured. Standby will sync on interval."
         });
     }

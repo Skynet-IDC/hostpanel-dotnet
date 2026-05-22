@@ -132,6 +132,24 @@ public class ReconciliationService
                 state.RetryCount = 0;
                 state.NextRetryAt = null;
 
+                // Bridge DesiredState success → Subscription.Status. Without this the
+                // subscription stays PendingSetup forever even though the vhost is up
+                // and serving — the dashboard misreports state and any polling caller
+                // (UI, scripts) never sees the transition. Only flip PendingSetup;
+                // leave Suspended/Cancelled alone since those are operator decisions
+                // that an automated reconciliation pass shouldn't override.
+                if (state.ResourceType == "subscription" && state.State == ProvisioningState.Active)
+                {
+                    var sub = await _db.Subscriptions.FindAsync(new object[] { state.ResourceId }, cancellationToken);
+                    if (sub is not null && sub.Status == SubscriptionStatus.PendingSetup)
+                    {
+                        sub.Status = SubscriptionStatus.Active;
+                        _logger.LogInformation(
+                            "Subscription {Id} promoted PendingSetup → Active after reconciliation, traceId={TraceId}",
+                            sub.Id, state.TraceId);
+                    }
+                }
+
                 _logger.LogInformation(
                     "Reconciled {Type}:{Id} successfully, traceId={TraceId}",
                     state.ResourceType, state.ResourceId, state.TraceId);

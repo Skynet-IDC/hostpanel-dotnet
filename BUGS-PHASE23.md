@@ -207,6 +207,27 @@ arrays on a fresh install. "Scan now" button works once a domain is added.
 
 ---
 
+## UI-BUG-008 — Custom plan name renders as "—" on Subscriptions table — **FIXED**
+
+**Surfaced:** Workflow #6 (custom plan create+attach). API confirmed
+subscription's `servicePlanName` changed to "WF Custom Upgrade" but the
+Subscriptions page still rendered "—" in the Plan cell.
+
+**Root cause:** `SubscriptionsPage.tsx:163,178` does `planById(s.servicePlanId)`
+against the global /serviceplans list, which excludes custom (per-customer)
+plans by design. Lookup returns undefined → cell falls through to "—".
+
+**Fix (commit `4508550`):** Fall back to `s.servicePlanName ?? '—'` (backend
+already includes the name on every SubscriptionDto). Added `servicePlanName?: string`
+to the `PanelSubscription` interface so TypeScript accepts it.
+
+**Verified:** Subscriptions page now reads "WF Custom Upgrade" in the Plan cell.
+
+**Severity:** MEDIUM — broke the dashboard glanceability of any subscription on
+a custom plan. Common case for resellers and one-off pricing.
+
+---
+
 ## UI-BUG-007 — WordPress install rejects domains with hyphens — **FIXED**
 
 **Surfaced:** Workflow test #2 (customer → sub → domain → WP install). Domain
@@ -242,10 +263,10 @@ contained a hyphen, which is the majority of real-world hosting domains.
 | 2 | **Create customer → sub → domain → WP** | **PASS** (after UI-BUG-007 fix) |
 | 3 | Per-customer logo upload | not yet run |
 | 4 | Quota enforcement | not yet run |
-| 5 | Service plan change | not yet run |
-| 6 | Custom plan create + attach | not yet run |
-| 7 | Real PDF download | not yet run |
-| 8 | Manual invoice generation | not yet run |
+| 5 | **Service plan change** | **PASS** (sub flipped from "Workflow Test Plan" → custom plan via Change-plan dialog) |
+| 6 | **Custom plan create + attach** | **PASS** (one-off "WF Custom Upgrade" $15/mo · 10GB created from inline form, attached to sub in same dialog. Surfaced + fixed UI-BUG-008 — custom plan name was rendering as "—" on Subscriptions table) |
+| 7 | **Real PDF download** | **PASS** (GET /billing/invoices/1/pdf → HTTP 200, content-type application/pdf, 19780 bytes, magic bytes %PDF) |
+| 8 | **Manual invoice generation** | **PASS** (Generate-invoice dialog → picked sub #1 → invoice #1 created with amount=$15.00 (matches custom plan), status=Sent, due=2026-06-05) |
 | 9 | Authentik SSO login | skipped — no Authentik in fresh test env |
 | 10 | Bandwidth tracker | not yet run |
 | 11 | HA failover from panel | not yet run (would leave standby in promoted state) |

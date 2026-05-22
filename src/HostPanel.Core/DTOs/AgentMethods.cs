@@ -17,6 +17,9 @@ public static class AgentMethods
     // PHP
     public const string PhpCreatePool = "php.createPool";
     public const string PhpDeletePool = "php.deletePool";
+    public const string PhpUpdatePool = "php.updatePool";
+    public const string PhpListVersions = "php.listVersions";
+    public const string PhpListExtensions = "php.listExtensions";
 
     // DNS
     public const string DnsCreateZone = "dns.createZone";
@@ -140,7 +143,7 @@ public static class AgentMethods
     [
         SystemCreateUser, SystemDeleteUser, SystemSetQuota, SystemGetStats, SystemGetBandwidth,
         NginxCreateVhost, NginxDeleteVhost, NginxReload,
-        PhpCreatePool, PhpDeletePool,
+        PhpCreatePool, PhpDeletePool, PhpUpdatePool, PhpListVersions, PhpListExtensions,
         SslIssueCertificate, SslRenewCertificate, SslRevokeCertificate,
         BackupCreate, BackupRestore,
         SystemCheckUpdates, SystemListUpdates, SystemInstallUpdates, SystemUpdateHistory,

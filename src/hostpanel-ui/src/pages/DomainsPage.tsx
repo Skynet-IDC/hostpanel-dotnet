@@ -116,7 +116,7 @@ export function DomainsPage() {
   );
 }
 
-type ManageTab = 'hotlink' | 'ipdeny' | 'pwprotect' | 'app';
+type ManageTab = 'hotlink' | 'ipdeny' | 'pwprotect' | 'app' | 'php';
 
 function ManageDomainDialog({ domain, onClose }: { domain: DomainDto; onClose: () => void }) {
   const [tab, setTab] = useState<ManageTab>('hotlink');
@@ -133,11 +133,13 @@ function ManageDomainDialog({ domain, onClose }: { domain: DomainDto; onClose: (
         <button className={`tab ${tab === 'ipdeny' ? 'tab--active' : ''}`} onClick={() => setTab('ipdeny')}>IP deny</button>
         <button className={`tab ${tab === 'pwprotect' ? 'tab--active' : ''}`} onClick={() => setTab('pwprotect')}>Password protect</button>
         <button className={`tab ${tab === 'app' ? 'tab--active' : ''}`} onClick={() => setTab('app')}>App config</button>
+        <button className={`tab ${tab === 'php' ? 'tab--active' : ''}`} onClick={() => setTab('php')}>PHP</button>
       </div>
       {tab === 'hotlink' && <HotlinkPane domainId={domain.id} />}
       {tab === 'ipdeny' && <IpDenyPane domainId={domain.id} />}
       {tab === 'pwprotect' && <PwProtectPane domainId={domain.id} />}
       {tab === 'app' && <AppPane domainId={domain.id} />}
+      {tab === 'php' && <PhpPane domainId={domain.id} />}
     </Dialog>
   );
 }
@@ -275,6 +277,136 @@ function AppPane({ domainId }: { domainId: number }) {
         <button className="btn" onClick={() => run('build')} disabled={busy !== null}>{busy === 'build' ? 'Building…' : 'Build'}</button>
         <button className="btn primary" onClick={() => run('restart')} disabled={busy !== null}>{busy === 'restart' ? 'Restarting…' : 'Restart'}</button>
         {msg && <span className="muted" style={{ fontSize: 12 }}>{msg}</span>}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Phase C — per-domain PHP settings (Plesk-parity).
+ * Pulls current version + extension flags + ini overrides from the panel,
+ * plus the host's installed PHP versions + available extension catalog
+ * (read off /etc/php on the agent). Save triggers php.updatePool which
+ * rewrites the FPM pool config and reloads php{ver}-fpm.
+ */
+interface PhpState {
+  currentVersion: string;
+  extensions: string[];
+  iniOverrides: Record<string, string>;
+  host: {
+    installedVersions: string[];
+    availableExtensions: string[];
+    currentlyEnabledExtensions: string[];
+  };
+}
+
+const COMMON_INI_KEYS: { key: string; placeholder: string; hint: string }[] = [
+  { key: 'memory_limit', placeholder: '256M', hint: 'Per-request memory ceiling.' },
+  { key: 'upload_max_filesize', placeholder: '64M', hint: 'Largest single upload.' },
+  { key: 'post_max_size', placeholder: '64M', hint: 'Total POST body size; must be >= upload_max_filesize.' },
+  { key: 'max_execution_time', placeholder: '120', hint: 'Seconds before PHP kills a request.' },
+  { key: 'max_input_vars', placeholder: '5000', hint: 'Cap on $_POST/$_GET keys.' },
+  { key: 'display_errors', placeholder: 'Off', hint: 'On for dev; Off for prod.' },
+  { key: 'date.timezone', placeholder: 'America/Los_Angeles', hint: 'Default tz when scripts don\'t set one.' },
+  { key: 'opcache.enable', placeholder: '1', hint: 'OPcache is a big speedup for PHP apps.' },
+  { key: 'opcache.memory_consumption', placeholder: '128', hint: 'OPcache RAM in MB.' },
+];
+
+function PhpPane({ domainId }: { domainId: number }) {
+  const [state, setState] = useState<PhpState | null>(null);
+  const [version, setVersion] = useState('');
+  const [enabled, setEnabled] = useState<Set<string>>(new Set());
+  const [ini, setIni] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const load = async () => {
+    setMsg(null);
+    try {
+      const { data } = await api.get<PhpState>(`/domains/${domainId}/php`);
+      setState(data);
+      setVersion(data.currentVersion);
+      setEnabled(new Set(data.extensions));
+      setIni({ ...data.iniOverrides });
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : 'Load failed' });
+    }
+  };
+  useEffect(() => { void load(); }, [domainId]);
+
+  const toggleExt = (ext: string) => {
+    const next = new Set(enabled);
+    if (next.has(ext)) next.delete(ext); else next.add(ext);
+    setEnabled(next);
+  };
+
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const { data } = await api.put<{ success: boolean; agentMessage?: string }>(`/domains/${domainId}/php`, {
+        phpVersion: version,
+        extensions: Array.from(enabled),
+        iniOverrides: Object.fromEntries(Object.entries(ini).filter(([, v]) => v !== ''))
+      });
+      setMsg({ ok: data.success, text: data.agentMessage ?? (data.success ? 'Saved — FPM pool reloaded.' : 'Save returned without success flag.') });
+      void load();
+    } catch (e) {
+      const resp = e && typeof e === 'object' && 'response' in e ? (e as { response?: { data?: { message?: string } } }).response : null;
+      setMsg({ ok: false, text: resp?.data?.message ?? (e instanceof Error ? e.message : 'Save failed') });
+    } finally { setBusy(false); }
+  };
+
+  if (state === null) return <div className="muted">Loading PHP state…</div>;
+
+  return (
+    <div className="col gap-3">
+      <Field label="PHP version" hint="Pick from versions installed on the host. Install more via apt + ondrej/php PPA.">
+        <select className="select" value={version} onChange={e => setVersion(e.target.value)}>
+          {state.host.installedVersions.length === 0 && <option value={version}>{version} (host detection failed)</option>}
+          {state.host.installedVersions.map(v => <option key={v} value={v}>PHP {v}</option>)}
+        </select>
+      </Field>
+
+      <div>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Extensions</div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          Toggle which extensions this domain's FPM pool loads. Available on the host: {state.host.availableExtensions.length}.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 6 }}>
+          {state.host.availableExtensions.map(ext => (
+            <label key={ext} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: 12 }}>
+              <input type="checkbox" checked={enabled.has(ext)} onChange={() => toggleExt(ext)} />
+              <span className="mono">{ext}</span>
+              {state.host.currentlyEnabledExtensions.includes(ext) && <Badge tone="success">on host</Badge>}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>php.ini overrides</div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 10 }}>
+          Leave blank to use the distro default. Only an allowlisted set of safe keys is accepted server-side.
+        </div>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {COMMON_INI_KEYS.map(({ key, placeholder, hint }) => (
+            <Field key={key} label={key} hint={hint}>
+              <input
+                className="input mono"
+                value={ini[key] ?? ''}
+                placeholder={placeholder}
+                onChange={e => setIni({ ...ini, [key]: e.target.value })}
+              />
+            </Field>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+        <button className="btn primary" onClick={save} disabled={busy || !version}>
+          {busy ? 'Saving + reloading FPM…' : 'Save & reload PHP-FPM'}
+        </button>
+        {msg && <span style={{ color: msg.ok ? 'var(--success)' : 'var(--danger)', fontSize: 12 }}>{msg.text}</span>}
       </div>
     </div>
   );

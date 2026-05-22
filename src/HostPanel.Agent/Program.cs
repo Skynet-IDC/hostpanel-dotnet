@@ -33,6 +33,9 @@ builder.Services.AddSingleton<IAgentMethodHandler, NginxReloadHandler>();
 // PHP-FPM
 builder.Services.AddSingleton<IAgentMethodHandler, PhpCreatePoolHandler>();
 builder.Services.AddSingleton<IAgentMethodHandler, PhpDeletePoolHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, PhpUpdatePoolHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, PhpListVersionsHandler>();
+builder.Services.AddSingleton<IAgentMethodHandler, PhpListExtensionsHandler>();
 
 // SSL
 builder.Services.AddSingleton<IAgentMethodHandler, SslIssueCertHandler>();

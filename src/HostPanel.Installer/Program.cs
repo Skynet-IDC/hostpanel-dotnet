@@ -1,10 +1,41 @@
-// F3 web installer — Stage 3 (wizard form pages).
-// Kestrel on 0.0.0.0:8080. Renders wizard form pages, accepts POSTs to
-// persist operator choices into WizardState (in-memory singleton — Stage 4
-// adds disk persistence), exposes /api/preflight + /api/wizard/* JSON.
+// F3 web installer — Stage 6 (CLI flags + headless + dry-run + uninstall + reconfigure).
+// Default boots Kestrel on :8080 (wizard). Flags select alternate modes.
 
 using HostPanel.Installer.Pages;
 using HostPanel.Installer.Services;
+
+// === Dispatch on CLI flags BEFORE building the web host ===
+
+CliOptions opts;
+try
+{
+    opts = CliOptions.Parse(args);
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine(ex.Message);
+    Console.Error.WriteLine();
+    Console.Error.WriteLine(CliOptions.HelpText());
+    return 1;
+}
+
+if (opts.Help)
+{
+    Console.WriteLine(CliOptions.HelpText());
+    return 0;
+}
+
+if (opts.Mode == CliMode.Uninstall)
+{
+    return Uninstaller.Run(opts.SkipConfirm);
+}
+
+if (opts.Mode == CliMode.Headless)
+{
+    return await HeadlessRunner.RunAsync(opts.ConfigPath!, opts.DryRun, CancellationToken.None);
+}
+
+// Wizard / DryRun / Reconfigure modes all boot the web host.
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,13 +51,14 @@ builder.Services.AddSingleton<WizardState>();
 builder.Services.AddSingleton<SseProgressBroker>();
 builder.Services.AddSingleton<InstallStateStore>();
 builder.Services.AddSingleton<InstallOrchestrator>();
+builder.Services.AddSingleton(opts);
 
 const string bindUrl = "http://0.0.0.0:8080";
 builder.WebHost.UseUrls(bindUrl);
 
 var app = builder.Build();
 
-// === Wizard pages (GET = render, POST = persist + redirect) ===
+// === Wizard pages ===
 
 app.MapGet("/", () => Results.Redirect("/welcome"));
 
@@ -101,25 +133,29 @@ app.MapPost("/wizard/standby", async (HttpRequest req, WizardState s) =>
 });
 
 app.MapGet("/wizard/confirm", (WizardState s) => Results.Content(ConfirmPage.Render(s), "text/html"));
-app.MapPost("/wizard/confirm", async (HttpRequest req, InstallOrchestrator orch) =>
+app.MapPost("/wizard/confirm", async (HttpRequest req, InstallOrchestrator orch, CliOptions cli) =>
 {
     var form = await req.ReadFormAsync();
     var action = form["action"].ToString();
     if (action != "install") return Results.Redirect("/wizard/confirm");
-    if (!orch.TryStart()) return Results.Redirect("/wizard/progress"); // already running
+    // Honor the global --dry-run flag (Wizard+DryRun mode) AND a per-run dry-run choice.
+    var dryRun = cli.DryRun;
+    if (!orch.TryStart(dryRun)) return Results.Redirect("/wizard/progress");
     return Results.Redirect("/wizard/progress");
 });
 
 app.MapGet("/wizard/progress", () => Results.Content(ProgressPage.Render(), "text/html"));
 
-// Dry-run preview — Stage 4 fills this in. For now redirects back with a note.
+// Dry-run preview page — also honored in wizard/install POST when --dry-run was passed.
 app.MapGet("/wizard/dryrun", (WizardState s) => Results.Content(
     HtmlLayout.RenderPage(
         title: "Dry-run preview",
         bodyContent: """
 <h1>Dry-run preview</h1>
-<p class='sub'>Stage 4 will list every command that would run, in order, without
-mutating the box. Not yet implemented.</p>
+<p class='sub'>The Install button will run in dry-run mode — every step logs what
+it would do but mutates nothing. Use this to preview a config in CI before the
+real run. Pass <code>--dry-run</code> on the command line OR click Install from
+the Confirm page after running this installer with <code>--dry-run</code>.</p>
 <div class='actions'><a class='btn' href='/wizard/confirm'>← Back to Confirm</a></div>
 """,
         currentStep: 8, totalSteps: 9),
@@ -130,7 +166,6 @@ mutating the box. Not yet implemented.</p>
 app.MapGet("/api/preflight", async (PreflightService svc, WizardState s, CancellationToken ct) =>
 {
     var report = await svc.GatherAsync(ct);
-    // Cache in wizard state so later pages can read RAM/swap/interfaces for prompts.
     s.CachedPreflight = report;
     return Results.Json(report, new System.Text.Json.JsonSerializerOptions
     {
@@ -149,31 +184,31 @@ app.MapGet("/api/wizard/state", (WizardState s) =>
 app.MapGet("/api/wizard/next", (WizardState s, string from) =>
     Results.Json(new { next = s.NextAfter(from), role = s.Role.ToString() }));
 
-// SSE stream of install events. Each subscriber gets the in-progress history
-// replayed first (so reloads don't lose context), then live updates.
+// "Save my answers" — downloads the current WizardState as install.yaml.
+app.MapGet("/api/wizard/export.yaml", (WizardState s) =>
+    Results.File(
+        System.Text.Encoding.UTF8.GetBytes(ConfigYaml.Save(s)),
+        "application/x-yaml",
+        "install.yaml"));
+
+// SSE stream of install events.
 app.MapGet("/api/install/events", async (HttpResponse resp, SseProgressBroker broker, CancellationToken ct) =>
 {
     resp.Headers["Cache-Control"] = "no-cache";
     resp.Headers["X-Accel-Buffering"] = "no";
     resp.ContentType = "text/event-stream";
 
-    var queue = new System.Threading.Channels.Channel<InstallProgressEvent>[1];
-    queue[0] = System.Threading.Channels.Channel.CreateUnbounded<InstallProgressEvent>();
+    var queue = System.Threading.Channels.Channel.CreateUnbounded<InstallProgressEvent>();
 
-    using var sub = broker.Subscribe(async ev =>
-    {
-        await queue[0].Writer.WriteAsync(ev, ct);
-    }, out var backlog);
+    using var sub = broker.Subscribe(async ev => { await queue.Writer.WriteAsync(ev, ct); }, out var backlog);
 
     foreach (var ev in backlog)
-    {
         await resp.WriteAsync(SseProgressBroker.SerializeForSse(ev), ct);
-    }
     await resp.Body.FlushAsync(ct);
 
     try
     {
-        await foreach (var ev in queue[0].Reader.ReadAllAsync(ct))
+        await foreach (var ev in queue.Reader.ReadAllAsync(ct))
         {
             await resp.WriteAsync(SseProgressBroker.SerializeForSse(ev), ct);
             await resp.Body.FlushAsync(ct);
@@ -182,17 +217,25 @@ app.MapGet("/api/install/events", async (HttpResponse resp, SseProgressBroker br
     catch (OperationCanceledException) { /* client disconnect */ }
 });
 
-app.MapGet("/healthz", () => Results.Ok(new
+app.MapGet("/healthz", (CliOptions cli) => Results.Ok(new
 {
     ok = true,
-    stage = "wizard-forms",
+    stage = "cli-flags",
+    mode = cli.Mode.ToString(),
+    dryRun = cli.DryRun,
     version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "dev",
     boundAt = bindUrl
 }));
 
 Console.WriteLine();
 Console.WriteLine("================================================================");
-Console.WriteLine("  HostPanel Installer — Stage 3 (wizard form pages)");
+var modeBanner = opts.Mode switch
+{
+    CliMode.DryRun => "Stage 6 (DRY-RUN — no mutations will occur)",
+    CliMode.Reconfigure => "Stage 6 (reconfigure — wizard for an existing install)",
+    _ => "Stage 6 (wizard)"
+};
+Console.WriteLine($"  HostPanel Installer — {modeBanner}");
 Console.WriteLine("================================================================");
 Console.WriteLine($"  Listening on {bindUrl}");
 Console.WriteLine("  Open this URL in a browser to begin install.");
@@ -201,5 +244,6 @@ Console.WriteLine("=============================================================
 Console.WriteLine();
 
 app.Run();
+return 0;
 
 public partial class Program { }

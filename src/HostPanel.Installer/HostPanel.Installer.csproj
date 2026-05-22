@@ -27,4 +27,9 @@
     <EmbeddedResource Include="..\..\installer\hostpanel-install.sh" LogicalName="hostpanel-install.sh" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- YamlDotNet for the config flag and Save-my-answers export. -->
+    <PackageReference Include="YamlDotNet" Version="16.2.1" />
+  </ItemGroup>
+
 </Project>

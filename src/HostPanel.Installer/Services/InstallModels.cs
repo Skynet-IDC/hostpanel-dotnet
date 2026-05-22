@@ -36,6 +36,7 @@ public class InstallContext
     public required WizardState State { get; init; }
     public required SseProgressBroker Progress { get; init; }
     public required ILogger Logger { get; init; }
+    public bool DryRun { get; init; }
     public List<string> RunLog { get; } = [];
 
     public void Log(string line)

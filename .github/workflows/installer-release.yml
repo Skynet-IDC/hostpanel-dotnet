@@ -1,0 +1,84 @@
+name: F3 installer release
+
+on:
+  push:
+    tags:
+      - 'installer-v*'   # e.g. installer-v0.1.0
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to attach release to (e.g. installer-v0.1.0). Required for manual runs.'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # to create the release + upload artifacts
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore src/HostPanel.Installer/HostPanel.Installer.csproj
+
+      - name: Publish (linux-x64 self-contained single-file)
+        run: |
+          dotnet publish src/HostPanel.Installer/HostPanel.Installer.csproj \
+            -c Release \
+            -o publish-out \
+            --nologo
+
+      - name: Sanity check published binary
+        run: |
+          test -f publish-out/hostpanel-installer || (echo "binary missing"; ls -la publish-out; exit 1)
+          file publish-out/hostpanel-installer
+          ls -la publish-out/hostpanel-installer
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          sha=$(sha256sum publish-out/hostpanel-installer | awk '{print $1}')
+          echo "sha256=$sha" >> $GITHUB_OUTPUT
+          echo "$sha  hostpanel-installer" > publish-out/hostpanel-installer.sha256
+          echo "Published checksum: $sha"
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          body: |
+            HostPanel F3 web installer — single-file linux-x64 binary.
+
+            **Install on a fresh Ubuntu 24.04 box:**
+            ```
+            curl -sSL https://raw.githubusercontent.com/mgardner323/hostpanel/main/installer/web.sh | sudo bash
+            ```
+            Or download + verify manually:
+            ```
+            wget https://github.com/mgardner323/hostpanel/releases/download/${{ steps.tag.outputs.tag }}/hostpanel-installer
+            sha256sum hostpanel-installer   # expect: ${{ steps.sha.outputs.sha256 }}
+            chmod +x ./hostpanel-installer && sudo ./hostpanel-installer
+            ```
+            Wizard binds to `http://<box>:8080`. Press Ctrl-C to abort.
+
+            **SHA256:** `${{ steps.sha.outputs.sha256 }}`
+          files: |
+            publish-out/hostpanel-installer
+            publish-out/hostpanel-installer.sha256

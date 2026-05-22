@@ -84,23 +84,32 @@ public class InstallOrchestrator
         return steps;
     }
 
-    public bool TryStart()
+    public bool TryStart(bool dryRun = false)
     {
         if (IsRunning) return false;
         _activeRunId = Guid.NewGuid().ToString("N")[..12];
-        _activeRun = Task.Run(RunPipelineAsync);
+        _activeRun = Task.Run(() => RunPipelineAsync(dryRun));
         return true;
     }
 
-    private async Task RunPipelineAsync()
+    /// <summary>Await the currently-running pipeline. Used by the headless runner.</summary>
+    public Task? ActiveRunTask => _activeRun;
+
+    private async Task RunPipelineAsync(bool dryRun)
     {
         var runId = _activeRunId!;
         var ctx = new InstallContext
         {
             State = _wizard,
             Progress = _broker,
-            Logger = _logger
+            Logger = _logger,
+            DryRun = dryRun
         };
+        if (dryRun)
+        {
+            _broker.Broadcast(new InstallProgressEvent("step_log", null, null, null,
+                "── DRY RUN: no mutations will occur. Logging what would happen. ──", DateTime.UtcNow));
+        }
         var startedAt = DateTime.UtcNow;
 
         BuildPipeline();
@@ -327,9 +336,17 @@ public class InstallOrchestrator
     /// <summary>
     /// Run a command, streaming stdout AND stderr line-by-line to the install
     /// context's log (which fans out to the SSE broker). Throws on non-zero exit.
+    /// In DryRun mode: logs the command line and returns without executing.
     /// </summary>
     private static async Task StreamCommandAsync(string cmd, string[] args, InstallContext ctx, CancellationToken ct)
     {
+        if (ctx.DryRun)
+        {
+            ctx.Log($"  [dry-run] would exec: {cmd} {string.Join(" ", args.Select(a => a.Contains(' ') ? $"\"{a}\"" : a))}");
+            await Task.CompletedTask;
+            return;
+        }
+
         var psi = new ProcessStartInfo(cmd)
         {
             RedirectStandardOutput = true,
@@ -492,6 +509,11 @@ public class InstallOrchestrator
 
     private async Task AptInstall(InstallContext ctx, CancellationToken ct, params string[] packages)
     {
+        if (ctx.DryRun)
+        {
+            ctx.Log($"  [dry-run] would apt-get install -y {string.Join(" ", packages)}");
+            return;
+        }
         var args = new List<string> { "-y", "install" };
         args.AddRange(packages);
         var (exit, _, err) = await Run("/usr/bin/apt-get", args.ToArray(), ct);

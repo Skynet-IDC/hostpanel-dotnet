@@ -29,10 +29,16 @@ mutating anything.</p>
   {summary}
 </div>
 
-<form method='post' action='/wizard/confirm' style='margin-top:1.5rem'>
-  {Check("saveYaml", "Save these answers to install.yaml for later (downloadable after install)", false,
-    "Use --config install.yaml --headless on the next box to replay this exact install.")}
+<div class='card'>
+  <p style='margin:0 0 .75rem; font-weight:500'>Reusable config</p>
+  <p class='check-detail' style='margin-bottom:.75rem'>
+    Download these answers as install.yaml. Replay on a sibling box via
+    <code>sudo hostpanel-installer --config install.yaml --headless</code>.
+  </p>
+  <a class='btn' href='/api/wizard/export.yaml' download='install.yaml'>↓ Download install.yaml</a>
+</div>
 
+<form method='post' action='/wizard/confirm' style='margin-top:1.5rem'>
   <div class='actions'>
     <a class='btn' href='{(s.Role == InstallRole.Primary ? "/wizard/admin" : "/wizard/standby")}'>← Back</a>
     <a class='btn' href='/wizard/dryrun'>Dry-run preview</a>

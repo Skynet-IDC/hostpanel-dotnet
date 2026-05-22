@@ -28,10 +28,17 @@ public class WordPressToolkit
             .FirstOrDefaultAsync(d => d.Id == domainId, ct)
             ?? throw new InvalidOperationException("Domain not found");
 
-        var dbName = $"wp_{domain.Subscription.SystemUsername}_{domain.Name.Replace(".", "_")}";
+        // MySQL identifier rules: letters/digits/underscore/dollar only — no dots or hyphens.
+        // Truncate dbName to MySQL's 64-char limit (subscription systemUsername + domain
+        // segments can blow past it on long customer domains). UI-BUG-007: domain.Name
+        // hyphens were left in the dbName, generating "wp_..._wf-test_example_com" which
+        // MySQL rejects with "Invalid database name".
+        static string Mysqlify(string s) => s.Replace('.', '_').Replace('-', '_');
+        var dbName = $"wp_{Mysqlify(domain.Subscription.SystemUsername)}_{Mysqlify(domain.Name)}";
+        if (dbName.Length > 64) dbName = dbName[..64];
         // Domain-unique user so each WP site has its own MySQL identity.
         // Truncate to 32 chars (MySQL username limit).
-        var rawUser = $"wp_{domain.Name.Replace(".", "_").Replace("-", "_")}";
+        var rawUser = $"wp_{Mysqlify(domain.Name)}";
         var dbUser = rawUser.Length > 32 ? rawUser[..32] : rawUser;
         var dbPass = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(18));
 

@@ -36,6 +36,7 @@ public class AppDbContext : IdentityDbContext<AppUser>
     public DbSet<BrandingConfig> BrandingConfigs => Set<BrandingConfig>();
     public DbSet<AppConfig> AppConfigs => Set<AppConfig>();
     public DbSet<HaSyncState> HaSyncStates => Set<HaSyncState>();
+    public DbSet<HaPairingToken> HaPairingTokens => Set<HaPairingToken>();
     public DbSet<SystemSetting> SystemSettings => Set<SystemSetting>();
     public DbSet<CustomerBranding> CustomerBrandings => Set<CustomerBranding>();
     public DbSet<MigrationSource> MigrationSources => Set<MigrationSource>();
@@ -179,6 +180,14 @@ public class AppDbContext : IdentityDbContext<AppUser>
             e.HasIndex(d => new { d.ResourceType, d.ResourceId }).IsUnique();
             e.HasIndex(d => d.State);
             e.HasIndex(d => d.NextRetryAt);
+        });
+
+        // HaPairingToken — unique on Token (lookup by raw value), and index on ExpiresAt so
+        // a cleanup job can find stale rows cheaply.
+        builder.Entity<HaPairingToken>(e =>
+        {
+            e.HasIndex(t => t.Token).IsUnique();
+            e.HasIndex(t => t.ExpiresAt);
         });
     }
 

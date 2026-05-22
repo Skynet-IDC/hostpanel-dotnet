@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -638,6 +639,207 @@ public class HighAvailabilityController : ControllerBase
 
         return Ok(new { ok = errors.Count == 0, errors });
     }
+
+    /// <summary>
+    /// F3 web installer: issue a single-use 15-minute pairing token a fresh standby
+    /// can present to /ha/register-standby. Admin-only — the token is the credential the
+    /// anonymous register-standby call uses, so it must only be handed to a trusted operator.
+    /// </summary>
+    [HttpPost("pairing-token")]
+    public async Task<IActionResult> CreatePairingToken([FromBody] CreatePairingTokenRequest? request = null)
+    {
+        var token = GenerateUrlSafeToken(48);
+        var ttlMinutes = Math.Clamp(request?.TtlMinutes ?? 15, 5, 60);
+
+        var entity = new HaPairingToken
+        {
+            Token = token,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(ttlMinutes),
+            Notes = request?.Notes,
+            IssuedByUserId = User.FindFirst("sub")?.Value
+                ?? User.Identity?.Name
+        };
+
+        _db.Set<HaPairingToken>().Add(entity);
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "HA pairing token #{Id} issued by {User} (TTL {Min}m, notes={Notes})",
+            entity.Id, entity.IssuedByUserId ?? "?", ttlMinutes, entity.Notes ?? "-");
+
+        return Ok(new
+        {
+            tokenId = entity.Id,
+            token,
+            expiresAt = entity.ExpiresAt,
+            expiresInSeconds = (int)(entity.ExpiresAt - DateTime.UtcNow).TotalSeconds,
+            notes = entity.Notes
+        });
+    }
+
+    /// <summary>
+    /// F3 web installer: a freshly-installed standby calls this once during install,
+    /// presenting the pairing token an operator generated on the primary. The primary
+    /// persists a Server row for the standby + seeds HaSyncState rows for both primary
+    /// and standby, then calls the standby's agent to wire up pull-sync — identical to
+    /// what /ha/configure-failover does, just with the operator out of the loop.
+    /// Anonymous: the pairing token IS the credential. Single-use and short-lived.
+    /// </summary>
+    [HttpPost("register-standby")]
+    [AllowAnonymous]
+    public async Task<IActionResult> RegisterStandby([FromBody] RegisterStandbyRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Token)
+            || string.IsNullOrWhiteSpace(request.Hostname)
+            || string.IsNullOrWhiteSpace(request.IpAddress)
+            || string.IsNullOrWhiteSpace(request.AgentToken))
+        {
+            return BadRequest(new { message = "token, hostname, ipAddress, agentToken are required" });
+        }
+
+        // 1. Validate the pairing token (constant-time compare via DB unique-index lookup).
+        var pairing = await _db.Set<HaPairingToken>().FirstOrDefaultAsync(t => t.Token == request.Token);
+        var callerIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+
+        if (pairing is null)
+        {
+            _logger.LogWarning("HA register-standby: unknown pairing token from {Ip}", callerIp);
+            return Unauthorized(new { message = "Invalid pairing token" });
+        }
+        if (pairing.ConsumedAt.HasValue)
+        {
+            _logger.LogWarning("HA register-standby: token #{Id} already consumed (by {OrigIp}); replay attempt from {Ip}",
+                pairing.Id, pairing.ConsumedByIp, callerIp);
+            return Unauthorized(new { message = "Pairing token already consumed" });
+        }
+        if (pairing.ExpiresAt < DateTime.UtcNow)
+        {
+            _logger.LogWarning("HA register-standby: token #{Id} expired at {ExpAt}", pairing.Id, pairing.ExpiresAt);
+            return Unauthorized(new { message = "Pairing token expired — generate a new one" });
+        }
+
+        // 2. Refuse if a server with this hostname or IP is already registered.
+        var conflict = await _db.Set<Server>()
+            .FirstOrDefaultAsync(s => s.Hostname == request.Hostname || s.IpAddress == request.IpAddress);
+        if (conflict is not null)
+        {
+            return Conflict(new
+            {
+                message = $"A server with hostname '{request.Hostname}' or IP '{request.IpAddress}' is already registered (id {conflict.Id}, isLocal={conflict.IsLocal})",
+                existingServerId = conflict.Id
+            });
+        }
+
+        // 3. Resolve the primary (this box).
+        var primary = await _db.Set<Server>().FirstOrDefaultAsync(s => s.IsLocal);
+        if (primary is null)
+        {
+            return StatusCode(500, new { message = "Primary server row not found on this panel — primary may be misconfigured" });
+        }
+
+        // 4. Persist Server + consume the token + seed HaSyncState rows (matches ConfigureFailover).
+        var standby = new Server
+        {
+            Hostname = request.Hostname,
+            IpAddress = request.IpAddress,
+            AgentPort = request.AgentPort ?? 50051,
+            AgentToken = request.AgentToken,
+            IsLocal = false,
+            IsActive = true,
+            ServerGroup = "failover"
+        };
+        _db.Set<Server>().Add(standby);
+
+        pairing.ConsumedAt = DateTime.UtcNow;
+        pairing.ConsumedByIp = callerIp;
+
+        await _db.SaveChangesAsync(); // standby.Id materialised here
+
+        var syncDomains = request.SyncDomains ?? true;
+        var syncDatabases = request.SyncDatabases ?? true;
+        var syncEmail = request.SyncEmail ?? true;
+
+        var standbyState = new HaSyncState
+        {
+            ServerId = standby.Id,
+            Role = "standby",
+            SyncDirection = "pull",
+            SyncFiles = syncDomains,
+            SyncDatabases = syncDatabases,
+            SyncEmail = syncEmail
+        };
+        _db.Set<HaSyncState>().Add(standbyState);
+
+        var primaryState = await _db.Set<HaSyncState>().FirstOrDefaultAsync(s => s.ServerId == primary.Id);
+        if (primaryState is null)
+        {
+            primaryState = new HaSyncState { ServerId = primary.Id };
+            _db.Set<HaSyncState>().Add(primaryState);
+        }
+        primaryState.Role = "primary";
+        primaryState.SyncDirection = "push";
+        primaryState.SyncFiles = syncDomains;
+        primaryState.SyncDatabases = syncDatabases;
+        primaryState.SyncEmail = syncEmail;
+
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation(
+            "HA standby registered: server #{Id} {Host} ({Ip}) via pairing token #{Tok} from {CallerIp}",
+            standby.Id, request.Hostname, request.IpAddress, pairing.Id, callerIp);
+
+        // 5. Best-effort: call the standby's agent to configure pull-sync now. If the agent
+        // isn't reachable yet (installer hasn't finished its agent setup) the row is already
+        // persisted — operator can re-run /ha/configure-failover from the UI later.
+        bool agentConfigured = false;
+        string? agentMessage = null;
+        try
+        {
+            var agent = _agentFactory.GetAgent(standby);
+            var result = await agent.ExecuteAsync(new AgentRequest
+            {
+                Method = "ha.configureStandby",
+                Params = new Dictionary<string, object?>
+                {
+                    ["primaryIp"] = primary.IpAddress,
+                    ["syncInterval"] = request.SyncIntervalMinutes ?? 15,
+                    ["syncDomains"] = syncDomains,
+                    ["syncDatabases"] = syncDatabases,
+                    ["syncEmail"] = syncEmail
+                }
+            });
+            agentConfigured = result.IsSuccess;
+            agentMessage = result.IsSuccess ? "Standby agent acknowledged pull-sync config" : result.Error?.Message;
+        }
+        catch (Exception ex)
+        {
+            agentMessage = $"Standby agent unreachable at this moment: {ex.Message}. Re-run /ha/configure-failover once the agent is up.";
+        }
+
+        return Ok(new
+        {
+            serverId = standby.Id,
+            haSyncStateId = standbyState.Id,
+            primaryHostname = primary.Hostname,
+            primaryIp = primary.IpAddress,
+            agentConfigured,
+            agentMessage,
+            message = agentConfigured
+                ? "Standby registered and initial pull-sync configured."
+                : "Standby registered. Agent handshake will retry — poll /ha/sync-state for LastSyncAt."
+        });
+    }
+
+    private static string GenerateUrlSafeToken(int byteLength)
+    {
+        Span<byte> buf = stackalloc byte[byteLength];
+        RandomNumberGenerator.Fill(buf);
+        // Base64url, no padding — URL/CLI-safe, no `+` / `/` / `=`
+        return Convert.ToBase64String(buf)
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
+    }
 }
 
 public record FailoverConfigRequest(int StandbyServerId, int SyncIntervalMinutes = 15, bool SyncDomains = true, bool SyncDatabases = true, bool SyncEmail = true);
@@ -648,3 +850,14 @@ public record PermanentPromoteRequest(int ServerId, bool DecommissionOldPrimary 
 public record HaTestRequest(int? StandbyServerId = null, int MaxAcceptableLagSeconds = 300);
 public record EnableLoadBalancerRequest(int StandbyServerId, string? Hostname = null);
 public record DisableLoadBalancerRequest(int StandbyServerId);
+public record CreatePairingTokenRequest(string? Notes = null, int? TtlMinutes = null);
+public record RegisterStandbyRequest(
+    string Token,
+    string Hostname,
+    string IpAddress,
+    string AgentToken,
+    int? AgentPort = null,
+    bool? SyncDomains = null,
+    bool? SyncDatabases = null,
+    bool? SyncEmail = null,
+    int? SyncIntervalMinutes = null);

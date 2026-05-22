@@ -962,10 +962,16 @@ configure_firewall() {
 
     # HostPanel cross-host agent TCP listener — restricted to LAN sources so a
     # leaked agent token cannot be exercised from outside the trusted subnet.
-    # CIDR defaults to the local default-route LAN; --ha-allow-cidr overrides.
+    # CIDR defaults to the network attached to the default-route NIC; that
+    # filters out container bridges (docker0 is also scope-link but on a
+    # different NIC, so it must not match). --ha-allow-cidr overrides.
     local _ha_cidr="$HA_ALLOW_CIDR"
     if [[ -z "$_ha_cidr" ]]; then
-        _ha_cidr=$(ip -4 route show | awk '$1 != "default" && /scope link/ && /src/ {print $1; exit}')
+        local _lan_if
+        _lan_if=$(ip route show default | awk '{print $5; exit}')
+        if [[ -n "$_lan_if" ]]; then
+            _ha_cidr=$(ip -4 route show dev "$_lan_if" | awk '/scope link/ {print $1; exit}')
+        fi
     fi
     if [[ -n "$_ha_cidr" ]]; then
         ufw allow from "$_ha_cidr" to any port 50051 proto tcp comment "HostPanel HA agent"

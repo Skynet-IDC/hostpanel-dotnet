@@ -20,4 +20,11 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Embed the bash installer so a single self-contained binary can extract
+         + execute it at install time. Stage 4 layer 2. Path is relative to repo
+         root because the csproj is two levels deep (src/HostPanel.Installer/). -->
+    <EmbeddedResource Include="..\..\installer\hostpanel-install.sh" LogicalName="hostpanel-install.sh" />
+  </ItemGroup>
+
 </Project>

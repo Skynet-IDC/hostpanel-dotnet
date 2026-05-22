@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 
 namespace HostPanel.Installer.Services;
 
@@ -59,9 +60,11 @@ public class InstallOrchestrator
         if (s.CreateSwapfile)
             steps.Add(new("swap", "Create 4 GB swapfile", Required: false, CreateSwapfileAsync));
 
-        // Core install path — Stage 4 layer 2 will replace with embedded bash invoker.
-        steps.Add(new("bash-install", "Run bundled hostpanel-install.sh (Stage 4 layer 2 — placeholder)",
-            Required: true, PlaceholderBashStepAsync));
+        // Core install path — extracts + execs the embedded bash installer with
+        // wizard-state-derived flags. Real work happens here (apt installs, EF
+        // migrations, systemd unit writes, nginx config, etc).
+        steps.Add(new("bash-install", "Run bundled hostpanel-install.sh",
+            Required: true, RunBashInstallerAsync));
 
         // Optional integrations.
         if (s.ConfigureUfw)
@@ -75,7 +78,7 @@ public class InstallOrchestrator
         if (s.Role == InstallRole.Standby && !string.IsNullOrEmpty(s.PairingToken))
             steps.Add(new("ha-register", "Register with primary (HA pairing)", Required: true, RegisterStandbyAsync));
 
-        steps.Add(new("health-check", "Final health check", Required: true, HealthCheckAsync));
+        steps.Add(new("health-check", "Final health check", Required: true, HealthCheckRealAsync));
 
         _steps = steps;
         return steps;
@@ -251,11 +254,112 @@ public class InstallOrchestrator
         await File.AppendAllTextAsync("/etc/fstab", $"{swap} none swap sw 0 0\n", ct);
     }
 
-    private Task PlaceholderBashStepAsync(InstallContext ctx, CancellationToken ct)
+    /// <summary>
+    /// Stage 4 layer 2 — extract the embedded hostpanel-install.sh and run it
+    /// with CLI flags derived from wizard state. stdout/stderr lines stream to
+    /// the SSE broker as step_log events so the operator sees real-time progress.
+    /// </summary>
+    private async Task RunBashInstallerAsync(InstallContext ctx, CancellationToken ct)
     {
-        ctx.Log("  [layer 2] would invoke embedded hostpanel-install.sh with wizard env vars here");
-        ctx.Log("  [layer 2] for now this step succeeds as a no-op so we can validate the framework");
-        return Task.CompletedTask;
+        var scriptPath = ExtractEmbeddedScript("hostpanel-install.sh");
+        ctx.Log($"  extracted bundled installer to {scriptPath}");
+        File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var args = new List<string> { scriptPath };
+        var s = ctx.State;
+
+        // Always pass --git-repo + --git-ref so the bash installer clones the panel
+        // source itself (the installer binary doesn't ship the panel source).
+        args.AddRange(["--git-repo", "https://github.com/mgardner323/hostpanel.git", "--git-ref", "main"]);
+
+        if (s.InstallMssql && !string.IsNullOrEmpty(s.SaPassword))
+            args.AddRange(["--sql-password", s.SaPassword]);
+        else if (!s.InstallMssql)
+            args.Add("--skip-mssql");
+
+        if (!string.IsNullOrEmpty(s.AdminEmail))
+            args.AddRange(["--admin-email", s.AdminEmail]);
+        if (!string.IsNullOrEmpty(s.AdminPassword))
+            args.AddRange(["--admin-password", s.AdminPassword]);
+
+        // Sentry DSNs are configured later via panel Settings — installer-side opt-in
+        // only flips the install-failure-reporting switch, not the panel's runtime DSNs.
+
+        ctx.Log($"  invoking: bash {scriptPath} (with {(args.Count - 1)/2} arg pairs)");
+        await StreamCommandAsync("/bin/bash", args.ToArray(), ctx, ct);
+    }
+
+    /// <summary>
+    /// Stage 4 layer 2 — real health check. Curls https://localhost:8443/api/v1/health
+    /// and accepts 200 or 503 (503 from /health = nginx up, agent fronted but unhealthy
+    /// — we'll see that and the operator can address it post-install).
+    /// </summary>
+    private async Task HealthCheckRealAsync(InstallContext ctx, CancellationToken ct)
+    {
+        for (var attempt = 1; attempt <= 12; attempt++)
+        {
+            var (exit, stdout, _) = await Run("/usr/bin/curl",
+                ["-sk", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5",
+                 "https://localhost:8443/api/v1/health"], ct);
+            if (exit == 0 && (stdout.Trim() == "200" || stdout.Trim() == "503"))
+            {
+                ctx.Log($"  ✓ panel health check returned {stdout.Trim()} on attempt {attempt}");
+                return;
+            }
+            ctx.Log($"  attempt {attempt}/12: health returned exit={exit} body={stdout.Trim()} (waiting 5s)");
+            await Task.Delay(5000, ct);
+        }
+        throw new InvalidOperationException("Panel health check never returned 200/503 after 60s — install may be incomplete");
+    }
+
+    /// <summary>Extract a file embedded via &lt;EmbeddedResource&gt; in the csproj to /tmp.</summary>
+    private static string ExtractEmbeddedScript(string logicalName)
+    {
+        var asm = typeof(InstallOrchestrator).Assembly;
+        using var stream = asm.GetManifestResourceStream(logicalName)
+            ?? throw new InvalidOperationException($"Embedded resource '{logicalName}' not found. Manifest: {string.Join(", ", asm.GetManifestResourceNames())}");
+        var dest = Path.Combine(Path.GetTempPath(), logicalName);
+        using var file = File.Create(dest);
+        stream.CopyTo(file);
+        return dest;
+    }
+
+    /// <summary>
+    /// Run a command, streaming stdout AND stderr line-by-line to the install
+    /// context's log (which fans out to the SSE broker). Throws on non-zero exit.
+    /// </summary>
+    private static async Task StreamCommandAsync(string cmd, string[] args, InstallContext ctx, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo(cmd)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+
+        using var p = Process.Start(psi)!;
+
+        async Task DrainAsync(StreamReader reader, string prefix)
+        {
+            string? line;
+            while ((line = await reader.ReadLineAsync(ct)) != null)
+            {
+                // Strip ANSI color codes so the SSE log pane stays clean.
+                var clean = System.Text.RegularExpressions.Regex.Replace(line, @"\x1b\[[0-9;]*m", "");
+                ctx.Log($"  {prefix}{clean}");
+            }
+        }
+
+        var stdoutTask = DrainAsync(p.StandardOutput, "");
+        var stderrTask = DrainAsync(p.StandardError, "[err] ");
+
+        await p.WaitForExitAsync(ct);
+        await Task.WhenAll(stdoutTask, stderrTask);
+
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"{Path.GetFileName(cmd)} exited with {p.ExitCode}");
     }
 
     private async Task ConfigureUfwAsync(InstallContext ctx, CancellationToken ct)
@@ -285,17 +389,105 @@ public class InstallOrchestrator
         if (exit != 0) throw new InvalidOperationException($"tailscale up failed: {err}");
     }
 
+    /// <summary>
+    /// Stage 5 — real standby registration flow.
+    /// 1. Read this box's freshly-written agent token from
+    ///    /opt/hostpanel/agent/appsettings.Production.json (created by bash installer).
+    /// 2. POST {primary}/api/v1/ha/register-standby with pairing token + agent token
+    ///    + this box's hostname + reachable IP.
+    /// 3. Primary persists the Server + HaSyncState rows and (best-effort) calls
+    ///    this box's agent to wire up pull-sync.
+    /// 4. Poll {primary}/api/v1/ha/sync-state until LastSyncAt is non-null
+    ///    (initial replication complete) OR timeout (operator can retry).
+    /// </summary>
     private async Task RegisterStandbyAsync(InstallContext ctx, CancellationToken ct)
     {
-        // Stage 5 will flesh this out with the real /ha/register-standby POST.
-        ctx.Log($"  [Stage 5] would POST {ctx.State.PrimaryUrl}/api/v1/ha/register-standby with token {ctx.State.PairingToken?[..8]}…");
-        await Task.CompletedTask;
+        var s = ctx.State;
+        var primary = s.PrimaryUrl?.TrimEnd('/')
+            ?? throw new InvalidOperationException("PrimaryUrl missing on standby");
+        var token = s.PairingToken
+            ?? throw new InvalidOperationException("PairingToken missing on standby");
+        var reachable = s.ThisBoxReachableAddress
+            ?? throw new InvalidOperationException("ThisBoxReachableAddress missing on standby");
+
+        var agentToken = await ReadAgentTokenAsync(ctx, ct);
+        ctx.Log($"  read agent token from /opt/hostpanel/agent/appsettings.Production.json ({agentToken.Length} chars)");
+
+        using var http = new HttpClient(new HttpClientHandler
+        {
+            // The primary likely uses a self-signed or LE cert that the standby
+            // may not trust during initial install (CA bundles not yet refreshed).
+            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+        });
+        http.Timeout = TimeSpan.FromSeconds(30);
+
+        var body = new
+        {
+            token,
+            hostname = s.Hostname,
+            ipAddress = reachable,
+            agentToken,
+            syncDomains = true,
+            syncDatabases = true,
+            syncEmail = true,
+            syncIntervalMinutes = 15
+        };
+
+        ctx.Log($"  POST {primary}/api/v1/ha/register-standby (token={token[..8]}…, hostname={s.Hostname}, ip={reachable})");
+        var resp = await http.PostAsJsonAsync($"{primary}/api/v1/ha/register-standby", body, ct);
+        var respBody = await resp.Content.ReadAsStringAsync(ct);
+
+        if (!resp.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Primary rejected registration: HTTP {(int)resp.StatusCode} — {respBody}");
+
+        ctx.Log($"  ✓ primary registered this standby — response: {respBody}");
+
+        // Poll sync-state until the primary reports a LastSyncAt for our server.
+        var deadline = DateTime.UtcNow.AddMinutes(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(5000, ct);
+            try
+            {
+                var syncResp = await http.GetAsync($"{primary}/api/v1/ha/sync-state", ct);
+                if (!syncResp.IsSuccessStatusCode)
+                {
+                    ctx.Log($"  sync-state poll: HTTP {(int)syncResp.StatusCode} — waiting…");
+                    continue;
+                }
+                var syncJson = await syncResp.Content.ReadAsStringAsync(ct);
+                if (syncJson.Contains("\"lastSyncAt\"") && !syncJson.Contains("\"lastSyncAt\":null"))
+                {
+                    ctx.Log("  ✓ initial sync completed — this standby is now in the cluster");
+                    return;
+                }
+                ctx.Log("  sync-state: LastSyncAt still null, waiting 5s…");
+            }
+            catch (Exception ex)
+            {
+                ctx.Log($"  sync-state poll error: {ex.Message} (continuing)");
+            }
+        }
+
+        // Don't hard-fail — the operator can re-run /ha/configure-failover from the
+        // primary's UI if the standby agent isn't fully up yet. Surfaces as a warning.
+        ctx.Log("  ⚠ initial sync didn't complete within 5min — operator can re-trigger from primary's HA dashboard");
     }
 
-    private async Task HealthCheckAsync(InstallContext ctx, CancellationToken ct)
+    private static async Task<string> ReadAgentTokenAsync(InstallContext ctx, CancellationToken ct)
     {
-        ctx.Log("  [Stage 4 layer 2] would curl https://localhost:8443/api/v1/health and verify 200");
-        await Task.CompletedTask;
+        const string path = "/opt/hostpanel/agent/appsettings.Production.json";
+        if (!File.Exists(path))
+            throw new InvalidOperationException($"{path} not found — bash installer must run successfully first");
+
+        var json = await File.ReadAllTextAsync(path, ct);
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        if (doc.RootElement.TryGetProperty("Agent", out var agent)
+            && agent.TryGetProperty("Token", out var token))
+        {
+            return token.GetString() ?? throw new InvalidOperationException("Agent.Token in appsettings is null");
+        }
+        throw new InvalidOperationException("Agent.Token not found in agent appsettings.Production.json");
     }
 
     private async Task AptInstall(InstallContext ctx, CancellationToken ct, params string[] packages)

@@ -176,7 +176,7 @@ returns proper structure.
 
 ---
 
-## UI-BUG-006 — /malware page: backend endpoints don't exist (deferred)
+## UI-BUG-006 — /malware page: backend endpoints don't exist — **FIXED**
 
 **Surfaced:** `/malware`. Console: 404 on `/security/malware/scans` AND
 `/security/malware/findings`. Page renders cleanly because the fetches
@@ -189,13 +189,77 @@ no GET history/findings + no quarantine endpoints. The frontend was built
 expecting them; the backend was never built. Tier 2 backlog item; no UI
 crash since frontend degrades.
 
-**Fix scope (deferred):** Add to SecurityScanController:
-- `GET /security/malware/scans` — return scan history from agent log
-- `GET /security/malware/findings` — return cached ClamAV detections
-- `POST /security/malware-scan` — per-path scan (frontend POSTs to this)
-- `POST /security/malware/findings/{id}/quarantine` — move file out of webroot
+**Fix (commit `fadd84d`):**
+- Added all 4 endpoints to `SecurityScanController`.
+- File-backed JSON persistence at `/var/lib/hostpanel/malware-{scans,findings}.json`
+  (no new EF migration — small volume, easy to upgrade later).
+- New agent handler `SecurityQuarantineFileHandler` (`security.quarantineFile`)
+  moves infected files from `/var/www/...` to
+  `/var/quarantine/<stamp>.<guid>/<orig-path>` with read-only owner-only perms
+  and a sibling `manifest.json` for forensics. Refuses paths outside `/var/www/`.
+- Severity heuristic on findings (trojan/ransom/rootkit/backdoor → high,
+  adware/pup → low, else medium) so UI can colour-code without knowing the AV taxonomy.
 
-**Severity:** LOW — UI behaves correctly (degraded but not broken).
+**Verified:** /malware page now 0 console errors. Endpoints return 200 with empty
+arrays on a fresh install. "Scan now" button works once a domain is added.
+
+**Severity:** LOW (was deferred, now FIXED).
+
+---
+
+## UI-BUG-007 — WordPress install rejects domains with hyphens — **FIXED**
+
+**Surfaced:** Workflow test #2 (customer → sub → domain → WP install). Domain
+`wf-test.example.com`. Install dialog 400'd with "WordPress install failed:
+Invalid database name".
+
+**Root cause:** `WordPressToolkit.InstallAsync` line 31:
+```csharp
+var dbName = $"wp_{...SystemUsername}_{domain.Name.Replace(".", "_")}";
+```
+Replaces only `.` not `-`. MySQL identifiers reject hyphens, so any customer
+domain with a dash (very common in test/staging subdomains) produced an
+invalid db name. `dbUser` on the next line already handled both, just the
+`dbName` line was a copy-paste miss. Also no truncation against MySQL's
+64-char db-name limit, which would have bitten long customer domains too.
+
+**Fix (commit `93bc6b4`):** Introduced `Mysqlify(s)` helper, applied to both
+`dbName` and `dbUser`. Added 64-char truncation on `dbName`.
+
+**Verified:** Workflow test #2 retried after redeploy — WP install completed,
+site appears at `/wordpress` with version=latest, URL=http://wf-test.example.com.
+
+**Severity:** HIGH — affected any customer whose primary or sub-domain
+contained a hyphen, which is the majority of real-world hosting domains.
+
+---
+
+## Phase 23 workflow test results so far
+
+| # | Workflow | Status |
+|---|---|---|
+| 1 | First-launch wizard | N/A (admin seeded via installer flags) |
+| 2 | **Create customer → sub → domain → WP** | **PASS** (after UI-BUG-007 fix) |
+| 3 | Per-customer logo upload | not yet run |
+| 4 | Quota enforcement | not yet run |
+| 5 | Service plan change | not yet run |
+| 6 | Custom plan create + attach | not yet run |
+| 7 | Real PDF download | not yet run |
+| 8 | Manual invoice generation | not yet run |
+| 9 | Authentik SSO login | skipped — no Authentik in fresh test env |
+| 10 | Bandwidth tracker | not yet run |
+| 11 | HA failover from panel | not yet run (would leave standby in promoted state) |
+| 12 | Claude PTY terminal | skipped — needs BYOK Anthropic API key |
+| 13 | 2FA enrollment | not yet run |
+| 14 | Webhook delivery | not yet run |
+
+Test environment state after workflow #2:
+- 1 service plan (id 1, "Workflow Test Plan", 5GB/50GB/5dom/5mb/3db)
+- 1 customer (Workflow Tester / wf-test@example.com / 12+ char pw)
+- 1 subscription (id 1, Active, wf-test.example.com)
+- 1 domain (id 1, wf-test.example.com)
+- 1 WordPress site (wp-cli installed, latest version)
+- Tenant system user, nginx vhost, MySQL DB all provisioned
 
 ---
 

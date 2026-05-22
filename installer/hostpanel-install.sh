@@ -37,6 +37,9 @@ WITH_SDK=false
 SOURCE_DIR=""
 SENTRY_API_DSN=""
 SENTRY_UI_DSN=""
+# CIDR allowed to reach the cross-host agent TCP listener (port 50051). Empty = auto-detect
+# from the default-route LAN. Override via --ha-allow-cidr for unusual subnets.
+HA_ALLOW_CIDR=""
 # GitHub clone fallback: if neither --source nor --git-repo is given, default to the
 # operator's public repo. Override --git-repo or --git-ref for forks / branches.
 GIT_REPO="https://github.com/mgardner323/hostpanel.git"
@@ -55,7 +58,8 @@ while [[ $# -gt 0 ]]; do
         --git-ref) GIT_REF="$2"; shift 2;;
         --sentry-api-dsn) SENTRY_API_DSN="$2"; shift 2;;
         --sentry-ui-dsn) SENTRY_UI_DSN="$2"; shift 2;;
-        -h|--help) echo "Usage: $0 [--sql-password PASSWORD] [--admin-email EMAIL] [--admin-password PASSWORD] [--skip-mssql] [--skip-mail] [--with-sdk] [--source /path/to/src | --git-repo URL --git-ref BRANCH] [--sentry-api-dsn DSN] [--sentry-ui-dsn DSN]"; exit 0;;
+        --ha-allow-cidr) HA_ALLOW_CIDR="$2"; shift 2;;
+        -h|--help) echo "Usage: $0 [--sql-password PASSWORD] [--admin-email EMAIL] [--admin-password PASSWORD] [--skip-mssql] [--skip-mail] [--with-sdk] [--source /path/to/src | --git-repo URL --git-ref BRANCH] [--sentry-api-dsn DSN] [--sentry-ui-dsn DSN] [--ha-allow-cidr CIDR]"; exit 0;;
         *) log_error "Unknown option: $1"; exit 1;;
     esac
 done
@@ -651,6 +655,12 @@ EOF
             CONN_STR="Server=localhost;Database=HostPanel;User Id=sa;Password=${SQL_PASSWORD};TrustServerCertificate=True;"
         fi
 
+        # LAN IP for the cross-host agent TCP listener. Bound to a specific NIC so the
+        # listener cannot accidentally appear on a WAN-facing interface; defense-in-depth
+        # with the UFW source-IP allowlist in configure_firewall.
+        local LAN_IP
+        LAN_IP=$(hostname -I | awk '{print $1}')
+
         cat > "${INSTALL_DIR}/appsettings.Production.json" <<SETTINGS
 {
   "ConnectionStrings": {
@@ -668,7 +678,12 @@ EOF
   },
   "Agent": {
     "SocketPath": "/var/run/hostpanel/agent.sock",
-    "Token": "${AGENT_TOKEN}"
+    "Token": "${AGENT_TOKEN}",
+    "Tcp": {
+      "Enabled": true,
+      "Port": 50051,
+      "BindAddress": "${LAN_IP}"
+    }
   },
   "Ssl": {
     "CertPath": "${SSL_DIR}",
@@ -919,6 +934,21 @@ configure_firewall() {
     ufw allow 995/tcp    # POP3S
     ufw allow 53/tcp     # DNS
     ufw allow 53/udp     # DNS
+
+    # HostPanel cross-host agent TCP listener — restricted to LAN sources so a
+    # leaked agent token cannot be exercised from outside the trusted subnet.
+    # CIDR defaults to the local default-route LAN; --ha-allow-cidr overrides.
+    local _ha_cidr="$HA_ALLOW_CIDR"
+    if [[ -z "$_ha_cidr" ]]; then
+        _ha_cidr=$(ip -4 route show | awk '$1 != "default" && /scope link/ && /src/ {print $1; exit}')
+    fi
+    if [[ -n "$_ha_cidr" ]]; then
+        ufw allow from "$_ha_cidr" to any port 50051 proto tcp comment "HostPanel HA agent"
+        log_info "Firewall: HA agent port 50051 allowed from ${_ha_cidr}"
+    else
+        log_warn "Firewall: could not auto-detect LAN CIDR for HA agent port 50051 — pass --ha-allow-cidr to enable cross-host HA"
+    fi
+
     ufw --force enable
     log_info "Firewall configured and enabled"
 }

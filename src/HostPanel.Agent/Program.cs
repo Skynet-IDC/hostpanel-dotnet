@@ -116,7 +116,9 @@ builder.Services.AddSingleton<IAgentMethodHandler, MigrationVerifyCutoverHandler
 builder.Services.AddSingleton<IAgentMethodHandler, MigrationPatchWpConfigHandler>();
 
 builder.Services.AddSingleton<MethodRegistry>();
+builder.Services.AddSingleton<AgentSessionProcessor>();
 builder.Services.AddHostedService<Worker>();
+builder.Services.AddHostedService<TcpListenerWorker>();
 
 var host = builder.Build();
 host.Run();

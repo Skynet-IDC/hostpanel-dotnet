@@ -90,14 +90,22 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
                 await RunStep("/usr/bin/mysqldump", ["--all-databases", "--result-file", dbDump], "DB backup", log, ct, optional: true);
             }
 
-            // Step 2: Git pull. Capture HEAD before+after so we can drive selective rebuild —
-            // a docs-only commit shouldn't burn 3 min on a clean npm+dotnet pass.
+            // Step 2: Git pull. Capture HEAD before+after for log context, but per-subsystem
+            // sentinels (below) are what actually drive the selective rebuild — they survive
+            // out-of-band git pulls that would otherwise fool a pre-pull-HEAD comparison.
             _logger.LogInformation("[UPDATE] Step 2/7: Pulling latest code");
             log.Add("=== Step 2: Git Pull ===");
             string oldRev = "", newRev = "";
             var frontendChanged = true;
             var apiChanged = true;
             var agentChanged = true;
+            // Sentinel paths: each holds the git SHA that subsystem's deployed binary was built FROM.
+            // Comparing newRev against the sentinel (not against pre-pull HEAD) is what makes
+            // selective rebuild correct when the working tree was pre-advanced by cron/manual pull.
+            var apiSentinelPath = Path.Combine(installDir, ".api-build-sha");
+            var agentSentinelPath = Path.Combine(installDir, "agent", ".agent-build-sha");
+            var frontendSentinelPath = Path.Combine(installDir, "wwwroot", ".frontend-build-sha");
+
             if (Directory.Exists(Path.Combine(sourceDir, ".git")))
             {
                 var oldRevRes = await ProcessRunner.RunAsync("/usr/bin/git", ["-C", sourceDir, "rev-parse", "HEAD"], ct);
@@ -106,31 +114,26 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
                 await RunStep("/usr/bin/git", ["-C", sourceDir, "reset", "--hard", $"origin/{branch}"], "Git reset", log, ct);
                 var newRevRes = await ProcessRunner.RunAsync("/usr/bin/git", ["-C", sourceDir, "rev-parse", "HEAD"], ct);
                 newRev = newRevRes.StdOut.Trim();
-                if (!string.IsNullOrEmpty(oldRev) && oldRev != newRev)
-                {
-                    var diffRes = await ProcessRunner.RunAsync("/usr/bin/git",
-                        ["-C", sourceDir, "diff", "--name-only", $"{oldRev}..{newRev}"], ct);
-                    var changed = diffRes.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                    frontendChanged = changed.Any(p => p.StartsWith("src/hostpanel-ui/", StringComparison.Ordinal));
-                    apiChanged = changed.Any(p =>
-                        p.StartsWith("src/HostPanel.Api/", StringComparison.Ordinal) ||
-                        p.StartsWith("src/HostPanel.Core/", StringComparison.Ordinal) ||
-                        p.StartsWith("src/HostPanel.Infrastructure/", StringComparison.Ordinal) ||
-                        p.StartsWith("src/HostPanel.Modules.", StringComparison.Ordinal) ||
-                        p.StartsWith("src/HostPanel.Shared/", StringComparison.Ordinal));
-                    agentChanged = changed.Any(p =>
-                        p.StartsWith("src/HostPanel.Agent/", StringComparison.Ordinal) ||
-                        p.StartsWith("src/HostPanel.Core/", StringComparison.Ordinal) ||
-                        p.StartsWith("src/HostPanel.Shared/", StringComparison.Ordinal));
-                    log.Add($"Selective rebuild: frontend={frontendChanged}, api={apiChanged}, agent={agentChanged} ({changed.Length} files changed {oldRev[..7]}..{newRev[..7]})");
-                }
-                else if (oldRev == newRev)
-                {
-                    // Same HEAD post-reset — nothing to do, but we still let the pipeline complete a
-                    // restart so the operator can use Update as a "kick the service" button.
-                    frontendChanged = apiChanged = agentChanged = false;
-                    log.Add($"No new commits ({oldRev[..7]}). Skipping all builds; restart only.");
-                }
+
+                // Read per-subsystem build-SHA sentinels (missing = "deployed SHA unknown — rebuild").
+                string? apiSentinel = await ReadSentinelAsync(apiSentinelPath, ct);
+                string? agentSentinel = await ReadSentinelAsync(agentSentinelPath, ct);
+                string? frontendSentinel = await ReadSentinelAsync(frontendSentinelPath, ct);
+
+                log.Add(oldRev == newRev
+                    ? $"Working tree at {newRev[..7]} (no commits pulled — sentinels drive rebuild decision)"
+                    : $"Pulled {oldRev[..7]}..{newRev[..7]}");
+
+                frontendChanged = await SubsystemNeedsBuildAsync(sourceDir, frontendSentinel, newRev,
+                    ["src/hostpanel-ui/"], log, "frontend", ct);
+                apiChanged = await SubsystemNeedsBuildAsync(sourceDir, apiSentinel, newRev,
+                    ["src/HostPanel.Api/", "src/HostPanel.Core/", "src/HostPanel.Infrastructure/",
+                     "src/HostPanel.Modules.", "src/HostPanel.Shared/"], log, "api", ct);
+                agentChanged = await SubsystemNeedsBuildAsync(sourceDir, agentSentinel, newRev,
+                    ["src/HostPanel.Agent/", "src/HostPanel.Core/", "src/HostPanel.Shared/"], log, "agent", ct);
+
+                if (!frontendChanged && !apiChanged && !agentChanged)
+                    log.Add($"All subsystems already at {newRev[..7]} — restart only.");
             }
             else
             {
@@ -167,6 +170,7 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
                 {
                     if (Directory.Exists(wwwroot)) Directory.Delete(wwwroot, true);
                     await RunStep("/bin/cp", ["-a", distDir, wwwroot], "Deploy frontend", log, ct);
+                    await WriteSentinelAsync(frontendSentinelPath, newRev, ct);
                 }
             }
             else
@@ -187,6 +191,7 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
                     ["publish", $"{sourceDir}/src/HostPanel.Api/HostPanel.Api.csproj",
                      "-c", "Release", "-o", installDir, "--nologo", "-v", "quiet"],
                     "API build", log, ct, timeoutMs: 300_000);
+                await WriteSentinelAsync(apiSentinelPath, newRev, ct);
             }
 
             // Step 6: Build Agent (only if HostPanel.Agent or shared deps changed)
@@ -202,6 +207,7 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
                     ["publish", $"{sourceDir}/src/HostPanel.Agent/HostPanel.Agent.csproj",
                      "-c", "Release", "-o", $"{installDir}/agent", "--nologo", "-v", "quiet"],
                     "Agent build", log, ct, timeoutMs: 300_000);
+                await WriteSentinelAsync(agentSentinelPath, newRev, ct);
             }
 
             // Step 7: Fix ownership
@@ -333,6 +339,65 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
             throw new InvalidOperationException($"{label} failed: {result.StdErr}");
         }
         log.Add($"OK [{label}]");
+    }
+
+    /// <summary>
+    /// Returns true if a subsystem must be rebuilt. Decision is based on per-subsystem
+    /// build-SHA sentinels (the SHA the deployed binary was built FROM), not pre-pull HEAD.
+    /// Forces rebuild on: missing sentinel (first run after fix, or fresh install),
+    /// unreachable sentinel (history rewrite / force-push), or any path in the diff
+    /// sentinelSha..newRev matching pathPrefixes.
+    /// </summary>
+    private static async Task<bool> SubsystemNeedsBuildAsync(
+        string sourceDir, string? sentinelSha, string newRev,
+        string[] pathPrefixes, List<string> log, string subsystem, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(sentinelSha))
+        {
+            log.Add($"  [{subsystem}] no build-sha sentinel — forcing rebuild");
+            return true;
+        }
+        if (sentinelSha == newRev)
+        {
+            log.Add($"  [{subsystem}] sentinel matches HEAD ({newRev[..7]}) — already up to date");
+            return false;
+        }
+        var verify = await ProcessRunner.RunAsync("/usr/bin/git",
+            ["-C", sourceDir, "cat-file", "-e", $"{sentinelSha}^{{commit}}"], ct);
+        if (verify.ExitCode != 0)
+        {
+            log.Add($"  [{subsystem}] sentinel SHA {sentinelSha[..7]} unreachable (force-push?) — forcing rebuild");
+            return true;
+        }
+        var diffRes = await ProcessRunner.RunAsync("/usr/bin/git",
+            ["-C", sourceDir, "diff", "--name-only", $"{sentinelSha}..{newRev}"], ct);
+        if (diffRes.ExitCode != 0)
+        {
+            log.Add($"  [{subsystem}] diff failed — forcing rebuild");
+            return true;
+        }
+        var changed = diffRes.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var hit = changed.Any(p => pathPrefixes.Any(pre => p.StartsWith(pre, StringComparison.Ordinal)));
+        log.Add($"  [{subsystem}] {(hit ? "REBUILD" : "skip")} ({changed.Length} files {sentinelSha[..7]}..{newRev[..7]})");
+        return hit;
+    }
+
+    private static async Task<string?> ReadSentinelAsync(string path, CancellationToken ct)
+    {
+        if (!File.Exists(path)) return null;
+        try { return (await File.ReadAllTextAsync(path, ct)).Trim(); }
+        catch { return null; }
+    }
+
+    private static async Task WriteSentinelAsync(string path, string sha, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(sha)) return; // no .git path / no rev to stamp
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, sha, ct);
+        }
+        catch { /* best effort — sentinel will be regenerated on next successful build */ }
     }
 
     private static string? GetStr(Dictionary<string, object?> p, string k) =>

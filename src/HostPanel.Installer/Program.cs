@@ -17,6 +17,9 @@ builder.Logging.AddSimpleConsole(o =>
 
 builder.Services.AddSingleton<PreflightService>();
 builder.Services.AddSingleton<WizardState>();
+builder.Services.AddSingleton<SseProgressBroker>();
+builder.Services.AddSingleton<InstallStateStore>();
+builder.Services.AddSingleton<InstallOrchestrator>();
 
 const string bindUrl = "http://0.0.0.0:8080";
 builder.WebHost.UseUrls(bindUrl);
@@ -98,13 +101,16 @@ app.MapPost("/wizard/standby", async (HttpRequest req, WizardState s) =>
 });
 
 app.MapGet("/wizard/confirm", (WizardState s) => Results.Content(ConfirmPage.Render(s), "text/html"));
-app.MapPost("/wizard/confirm", async (HttpRequest req, WizardState s) =>
+app.MapPost("/wizard/confirm", async (HttpRequest req, InstallOrchestrator orch) =>
 {
     var form = await req.ReadFormAsync();
     var action = form["action"].ToString();
-    // Stage 4 will pick this up and start the orchestrator. For now just acknowledge.
-    return Results.Ok(new { acknowledged = true, action, state = "Stage 4 orchestrator not yet wired" });
+    if (action != "install") return Results.Redirect("/wizard/confirm");
+    if (!orch.TryStart()) return Results.Redirect("/wizard/progress"); // already running
+    return Results.Redirect("/wizard/progress");
 });
+
+app.MapGet("/wizard/progress", () => Results.Content(ProgressPage.Render(), "text/html"));
 
 // Dry-run preview — Stage 4 fills this in. For now redirects back with a note.
 app.MapGet("/wizard/dryrun", (WizardState s) => Results.Content(
@@ -142,6 +148,39 @@ app.MapGet("/api/wizard/state", (WizardState s) =>
 
 app.MapGet("/api/wizard/next", (WizardState s, string from) =>
     Results.Json(new { next = s.NextAfter(from), role = s.Role.ToString() }));
+
+// SSE stream of install events. Each subscriber gets the in-progress history
+// replayed first (so reloads don't lose context), then live updates.
+app.MapGet("/api/install/events", async (HttpResponse resp, SseProgressBroker broker, CancellationToken ct) =>
+{
+    resp.Headers["Cache-Control"] = "no-cache";
+    resp.Headers["X-Accel-Buffering"] = "no";
+    resp.ContentType = "text/event-stream";
+
+    var queue = new System.Threading.Channels.Channel<InstallProgressEvent>[1];
+    queue[0] = System.Threading.Channels.Channel.CreateUnbounded<InstallProgressEvent>();
+
+    using var sub = broker.Subscribe(async ev =>
+    {
+        await queue[0].Writer.WriteAsync(ev, ct);
+    }, out var backlog);
+
+    foreach (var ev in backlog)
+    {
+        await resp.WriteAsync(SseProgressBroker.SerializeForSse(ev), ct);
+    }
+    await resp.Body.FlushAsync(ct);
+
+    try
+    {
+        await foreach (var ev in queue[0].Reader.ReadAllAsync(ct))
+        {
+            await resp.WriteAsync(SseProgressBroker.SerializeForSse(ev), ct);
+            await resp.Body.FlushAsync(ct);
+        }
+    }
+    catch (OperationCanceledException) { /* client disconnect */ }
+});
 
 app.MapGet("/healthz", () => Results.Ok(new
 {

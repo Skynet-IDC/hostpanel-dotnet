@@ -187,10 +187,24 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
             }
             else
             {
+                // -p:DebugType=embedded keeps PDB symbols inside the DLL so we don't
+                // emit a .pdb file alongside. The previous behavior emitted .pdb files
+                // that the running API process held open; the next publish then failed
+                // with MSB3027/MSB3021 ("could not copy because in use by another
+                // process") and -v quiet swallowed the error so the orchestrator saw
+                // "API build failed:" with empty stderr and rolled back. Hit deploying
+                // Phase A backend 2026-05-22.
                 await RunStep("/usr/bin/dotnet",
                     ["publish", $"{sourceDir}/src/HostPanel.Api/HostPanel.Api.csproj",
-                     "-c", "Release", "-o", installDir, "--nologo", "-v", "quiet"],
+                     "-c", "Release", "-o", installDir, "--nologo", "-v", "quiet",
+                     "-p:DebugType=embedded", "-p:DebugSymbols=true"],
                     "API build", log, ct, timeoutMs: 300_000);
+                // Best-effort cleanup of orphaned .pdb files left behind from pre-fix
+                // builds. New publishes no longer create them; this just tidies disk.
+                foreach (var orphan in Directory.GetFiles(installDir, "*.pdb"))
+                {
+                    try { File.Delete(orphan); } catch { /* may be locked — fine to leave */ }
+                }
                 await WriteSentinelAsync(apiSentinelPath, newRev, ct);
             }
 
@@ -203,10 +217,21 @@ public class PanelFullUpdateHandler : IAgentMethodHandler
             }
             else
             {
+                // Same DebugType=embedded fix as API — the agent self-restart path
+                // sometimes leaves a brief window where the old .pdb is still mapped.
                 await RunStep("/usr/bin/dotnet",
                     ["publish", $"{sourceDir}/src/HostPanel.Agent/HostPanel.Agent.csproj",
-                     "-c", "Release", "-o", $"{installDir}/agent", "--nologo", "-v", "quiet"],
+                     "-c", "Release", "-o", $"{installDir}/agent", "--nologo", "-v", "quiet",
+                     "-p:DebugType=embedded", "-p:DebugSymbols=true"],
                     "Agent build", log, ct, timeoutMs: 300_000);
+                var agentDir = $"{installDir}/agent";
+                if (Directory.Exists(agentDir))
+                {
+                    foreach (var orphan in Directory.GetFiles(agentDir, "*.pdb"))
+                    {
+                        try { File.Delete(orphan); } catch { /* may be locked — fine */ }
+                    }
+                }
                 await WriteSentinelAsync(agentSentinelPath, newRev, ct);
             }
 

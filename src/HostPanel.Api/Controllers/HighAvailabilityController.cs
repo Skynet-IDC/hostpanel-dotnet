@@ -641,6 +641,36 @@ public class HighAvailabilityController : ControllerBase
     }
 
     /// <summary>
+    /// Admin-only delete of a non-local Server row + its HaSyncState. Refuses
+    /// to delete IsLocal=true (the primary itself). Useful for cleaning up
+    /// orphan test entries and decommissioning ex-standbys. Used after Stage 8
+    /// smoke tests to drop the synthetic register-standby rows from VM 280.
+    /// </summary>
+    [HttpDelete("server/{serverId:int}")]
+    public async Task<IActionResult> DeleteServer(int serverId)
+    {
+        var server = await _db.Set<Server>().FindAsync(serverId);
+        if (server is null) return NotFound(new { message = $"Server #{serverId} not found" });
+        if (server.IsLocal)
+            return BadRequest(new { message = "Refusing to delete the local primary server row" });
+
+        var syncStates = await _db.Set<HaSyncState>().Where(s => s.ServerId == serverId).ToListAsync();
+        _db.Set<HaSyncState>().RemoveRange(syncStates);
+        _db.Set<Server>().Remove(server);
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation("HA: deleted Server #{Id} ({Host} / {Ip}) + {SyncStateCount} HaSyncState rows",
+            serverId, server.Hostname, server.IpAddress, syncStates.Count);
+
+        return Ok(new
+        {
+            deletedServerId = serverId,
+            deletedSyncStates = syncStates.Count,
+            hostname = server.Hostname
+        });
+    }
+
+    /// <summary>
     /// F3 web installer: issue a single-use 15-minute pairing token a fresh standby
     /// can present to /ha/register-standby. Admin-only — the token is the credential the
     /// anonymous register-standby call uses, so it must only be handed to a trusted operator.

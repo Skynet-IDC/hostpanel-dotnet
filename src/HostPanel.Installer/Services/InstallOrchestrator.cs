@@ -325,8 +325,41 @@ public class InstallOrchestrator
 
     private async Task SetHostnameAsync(InstallContext ctx, CancellationToken ct)
     {
-        var (exit, _, err) = await Run("/usr/bin/hostnamectl", ["set-hostname", ctx.State.Hostname!], ct);
+        var hostname = ctx.State.Hostname!;
+        var (exit, _, err) = await Run("/usr/bin/hostnamectl", ["set-hostname", hostname], ct);
         if (exit != 0) throw new InvalidOperationException($"hostnamectl failed: {err}");
+
+        // hostnamectl alone doesn't fix sudo's "unable to resolve host" warning — that comes from
+        // getaddrinfo(hostname) returning NXDOMAIN because /etc/hosts has no entry. Two problems
+        // to solve on Ubuntu cloud images:
+        //
+        //  1. cloud-init's `manage_etc_hosts: true` rewrites /etc/hosts from a template on every
+        //     boot, so a direct edit gets reverted. Disable it via a drop-in cloud.cfg.d/ file.
+        //  2. /etc/hosts itself needs a 127.0.1.1 entry mapping the new hostname (Debian/Ubuntu
+        //     convention) so getaddrinfo on the hostname resolves cleanly.
+        //
+        // Both are idempotent: the drop-in overwrites cleanly, and the /etc/hosts edit replaces
+        // any existing 127.0.1.1 line so reinstalls with a different hostname don't accumulate
+        // stale entries.
+        const string cloudInitDropIn = "/etc/cloud/cloud.cfg.d/99-hostpanel-hosts.cfg";
+        if (Directory.Exists("/etc/cloud/cloud.cfg.d"))
+        {
+            await File.WriteAllTextAsync(cloudInitDropIn,
+                "# Written by HostPanel installer — stop cloud-init from overwriting /etc/hosts on reboot.\nmanage_etc_hosts: false\n",
+                ct);
+            ctx.Log($"  cloud-init manage_etc_hosts disabled via {cloudInitDropIn}");
+        }
+
+        const string hostsPath = "/etc/hosts";
+        var shortName = hostname.Split('.')[0];
+        var newLine = $"127.0.1.1 {hostname} {shortName}";
+        var existing = File.Exists(hostsPath) ? await File.ReadAllLinesAsync(hostsPath, ct) : [];
+        var kept = existing.Where(l => !l.TrimStart().StartsWith("127.0.1.1")).ToList();
+        var idx = kept.FindIndex(l => l.TrimStart().StartsWith("127.0.0.1"));
+        if (idx >= 0) kept.Insert(idx + 1, newLine);
+        else kept.Insert(0, newLine);
+        await File.WriteAllLinesAsync(hostsPath, kept, ct);
+        ctx.Log($"  /etc/hosts updated: 127.0.1.1 -> {hostname}");
     }
 
     private async Task SetTimezoneAsync(InstallContext ctx, CancellationToken ct)
@@ -586,18 +619,37 @@ public class InstallOrchestrator
 
     private static async Task<string> ReadAgentTokenAsync(InstallContext ctx, CancellationToken ct)
     {
-        const string path = "/opt/hostpanel/agent/appsettings.Production.json";
-        if (!File.Exists(path))
-            throw new InvalidOperationException($"{path} not found — bash installer must run successfully first");
-
-        var json = await File.ReadAllTextAsync(path, ct);
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
-        if (doc.RootElement.TryGetProperty("Agent", out var agent)
-            && agent.TryGetProperty("Token", out var token))
+        // /etc/hostpanel/agent.token is the canonical source — the file the agent itself reads
+        // (per Agent:TokenPath in /opt/hostpanel/agent/appsettings.Production.json). The API's
+        // appsettings duplicates it for outbound calls, but the agent's own appsettings only
+        // points AT the token file, it doesn't embed the value. Reading from the canonical file
+        // works regardless of how the bash installer wires the appsettings JSONs.
+        const string tokenFile = "/etc/hostpanel/agent.token";
+        if (File.Exists(tokenFile))
         {
-            return token.GetString() ?? throw new InvalidOperationException("Agent.Token in appsettings is null");
+            var raw = (await File.ReadAllTextAsync(tokenFile, ct)).Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+                throw new InvalidOperationException($"{tokenFile} is empty — bash installer must run successfully first");
+            return raw;
         }
-        throw new InvalidOperationException("Agent.Token not found in agent appsettings.Production.json");
+
+        // Fallback: older bash installer layouts may have only written the token into the API's
+        // appsettings.Production.json under Agent.Token. Keep this path so an upgrade install on
+        // a box that pre-dates /etc/hostpanel/agent.token still finds the token.
+        const string apiAppsettings = "/opt/hostpanel/appsettings.Production.json";
+        if (File.Exists(apiAppsettings))
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(apiAppsettings, ct));
+            if (doc.RootElement.TryGetProperty("Agent", out var agent)
+                && agent.TryGetProperty("Token", out var token))
+            {
+                return token.GetString()
+                    ?? throw new InvalidOperationException("Agent.Token in API appsettings is null");
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Agent token not found — checked {tokenFile} and {apiAppsettings}. Bash installer must run successfully first.");
     }
 
     private async Task AptInstall(InstallContext ctx, CancellationToken ct, params string[] packages)

@@ -237,14 +237,21 @@ public class PhpListVersionsHandler : IAgentMethodHandler
 
     public Task<AgentResult> HandleAsync(Dictionary<string, object?> parameters, CancellationToken ct)
     {
+        // A version is only "usable" if its fpm dir exists AND the fpm binary is on disk.
+        // /etc/php/X.Y can be created by a partial install (e.g. apt pulling in php8.4-common
+        // as a transitive dep) without -fpm — picking that version in the panel would 502.
+        // Require both the pool.d directory and the FPM binary so the picker only shows
+        // versions we can actually run.
         var versions = new List<string>();
         if (Directory.Exists("/etc/php"))
         {
             foreach (var dir in Directory.GetDirectories("/etc/php"))
             {
                 var name = Path.GetFileName(dir);
-                if (System.Text.RegularExpressions.Regex.IsMatch(name, @"^\d+\.\d+$"))
-                    versions.Add(name);
+                if (!System.Text.RegularExpressions.Regex.IsMatch(name, @"^\d+\.\d+$")) continue;
+                if (!Directory.Exists($"/etc/php/{name}/fpm/pool.d")) continue;
+                if (!File.Exists($"/usr/sbin/php-fpm{name}")) continue;
+                versions.Add(name);
             }
         }
         versions.Sort();

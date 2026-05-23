@@ -214,7 +214,13 @@ install_php() {
     add-apt-repository -y ppa:ondrej/php 2>/dev/null || true
     apt-get update -qq
 
-    for PHP_VER in 8.1 8.2 8.3; do
+    # 8.4 included — ondrej/php's `php` meta-package resolves to 8.4, so a partial
+    # 8.4 stack (cli + common + opcache + readline) gets pulled in by transitive
+    # deps of postfix/dovecot/etc anyway. Without -fpm + extension packages, the
+    # /etc/php/8.4 directory exists, the agent reports 8.4 as "installed", and any
+    # customer who picks 8.4 in the panel gets a 502. Bundling all four versions
+    # keeps the panel's PHP picker honest.
+    for PHP_VER in 8.1 8.2 8.3 8.4; do
         apt-get install -y -qq \
             php${PHP_VER}-fpm php${PHP_VER}-cli php${PHP_VER}-common \
             php${PHP_VER}-mysql php${PHP_VER}-pgsql php${PHP_VER}-sqlite3 \

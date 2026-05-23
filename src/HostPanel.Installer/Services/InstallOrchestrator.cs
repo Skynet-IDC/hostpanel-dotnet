@@ -368,7 +368,11 @@ public class InstallOrchestrator
 
         // Always pass --git-repo + --git-ref so the bash installer clones the panel
         // source itself (the installer binary doesn't ship the panel source).
-        args.AddRange(["--git-repo", "https://github.com/mgardner323/hostpanel.git", "--git-ref", "main"]);
+        // --with-sdk is REQUIRED because the bash installer's deploy_hostpanel runs
+        // `dotnet publish` against the cloned source; default install_dotnet only drops
+        // the runtime, not the SDK. Without --with-sdk, publish errors with "No .NET
+        // SDKs were found". Hit on VM 282 Stage 8 dogfood.
+        args.AddRange(["--git-repo", "https://github.com/mgardner323/hostpanel.git", "--git-ref", "main", "--with-sdk"]);
 
         if (s.InstallMssql && !string.IsNullOrEmpty(s.SaPassword))
             args.AddRange(["--sql-password", s.SaPassword]);

@@ -288,8 +288,39 @@ public class InstallOrchestrator
         // Finalize any half-configured packages from a prior interrupted run.
         var (cfgExit, _, cfgErr) = await Run("/usr/bin/dpkg", ["--configure", "-a"], ct);
         if (cfgExit != 0)
-            throw new InvalidOperationException($"dpkg --configure -a failed: {cfgErr}");
-        ctx.Log("  dpkg --configure -a OK — apt is ready for installs");
+        {
+            // Common failure on freshly-killed unattended-upgrades: corrupted
+            // transaction file under /var/lib/dpkg/updates/. The timers are now
+            // stopped (above) so nothing is mid-write — safe to clear + retry.
+            // Hit on VM 282 Stage 8 dogfood: "parsing file '/var/lib/dpkg/updates/0124' near line 0".
+            if (cfgErr.Contains("updates/") || cfgErr.Contains("parsing file"))
+            {
+                ctx.Log("  dpkg state corrupted by killed unattended-upgrades — clearing /var/lib/dpkg/updates/ + retrying");
+                try
+                {
+                    foreach (var stuck in Directory.GetFiles("/var/lib/dpkg/updates"))
+                        File.Delete(stuck);
+                }
+                catch (Exception ex) { ctx.Log($"  could not clear updates dir: {ex.Message}"); }
+
+                var (retryExit, _, retryErr) = await Run("/usr/bin/dpkg", ["--configure", "-a"], ct);
+                if (retryExit != 0)
+                    throw new InvalidOperationException($"dpkg --configure -a still failing after cleanup: {retryErr}");
+                ctx.Log("  dpkg --configure -a OK after cleanup");
+
+                // Heal any broken package deps that the killed upgrade left dangling.
+                await Run("/usr/bin/apt-get", ["-f", "-y", "install"], ct);
+                ctx.Log("  apt-get -f install OK — broken deps repaired");
+            }
+            else
+            {
+                throw new InvalidOperationException($"dpkg --configure -a failed: {cfgErr}");
+            }
+        }
+        else
+        {
+            ctx.Log("  dpkg --configure -a OK — apt is ready for installs");
+        }
     }
 
     private async Task SetHostnameAsync(InstallContext ctx, CancellationToken ct)

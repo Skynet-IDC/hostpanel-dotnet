@@ -48,6 +48,12 @@ public class InstallOrchestrator
         {
             new("validate", "Validate wizard answers", Required: true, ValidateInputsAsync),
             new("write-state-dir", "Create /var/lib/hostpanel-installer", Required: true, EnsureStateDirAsync),
+            // Always drain dpkg before any apt-using step. Ubuntu cloud images run
+            // unattended-upgrades on first boot — apt timers fire just as the operator
+            // hits "Install", leaving dpkg in a half-configured state. The bash
+            // installer already handles this internally, but optional steps (chrony,
+            // fail2ban, tailscale) run BEFORE bash-install and hit the lock first.
+            new("dpkg-drain", "Stop unattended-upgrades + wait for dpkg lock", Required: true, DrainDpkgAsync),
         };
 
         // Optional hygiene steps fire only when ticked.
@@ -232,6 +238,58 @@ public class InstallOrchestrator
         Directory.CreateDirectory("/var/lib/hostpanel-installer");
         ctx.Log("  /var/lib/hostpanel-installer created");
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Stop Ubuntu's unattended-upgrades + apt-daily timers, then wait up to
+    /// 10 minutes for /var/lib/dpkg/lock-frontend to be released, then run
+    /// `dpkg --configure -a` to finalize any half-configured state. Without
+    /// this, optional apt steps (chrony, fail2ban) hit "dpkg was interrupted"
+    /// on freshly-booted Ubuntu cloud images because cloud-init's first-boot
+    /// unattended-upgrades is still in progress. Hit on VM 282 Stage 8 dogfood.
+    /// </summary>
+    private async Task DrainDpkgAsync(InstallContext ctx, CancellationToken ct)
+    {
+        if (ctx.DryRun)
+        {
+            ctx.Log("  [dry-run] would stop apt timers + wait for dpkg lock + dpkg --configure -a");
+            return;
+        }
+
+        var unitsToStop = new[]
+        {
+            "unattended-upgrades.service",
+            "apt-daily.service", "apt-daily.timer",
+            "apt-daily-upgrade.service", "apt-daily-upgrade.timer"
+        };
+        foreach (var unit in unitsToStop)
+        {
+            // Best-effort; some units may not exist or already be stopped.
+            await Run("/usr/bin/systemctl", ["stop", unit], ct);
+            await Run("/usr/bin/systemctl", ["mask", unit], ct);
+        }
+        ctx.Log("  apt timers stopped + masked");
+
+        // Wait up to 10 minutes for any in-flight apt to finish.
+        var deadline = DateTime.UtcNow.AddMinutes(10);
+        var waited = 0;
+        while (DateTime.UtcNow < deadline)
+        {
+            var (exit, _, _) = await Run("/usr/bin/fuser", ["/var/lib/dpkg/lock-frontend"], ct);
+            if (exit != 0) break; // exit 1 = lock not held → we're clear
+            await Task.Delay(5000, ct);
+            waited += 5;
+            if (waited % 30 == 0) ctx.Log($"  waited {waited}s for dpkg lock to release…");
+        }
+
+        if (DateTime.UtcNow >= deadline)
+            ctx.Log("  ⚠ dpkg lock still held after 10min — continuing anyway; configure-a will likely retry");
+
+        // Finalize any half-configured packages from a prior interrupted run.
+        var (cfgExit, _, cfgErr) = await Run("/usr/bin/dpkg", ["--configure", "-a"], ct);
+        if (cfgExit != 0)
+            throw new InvalidOperationException($"dpkg --configure -a failed: {cfgErr}");
+        ctx.Log("  dpkg --configure -a OK — apt is ready for installs");
     }
 
     private async Task SetHostnameAsync(InstallContext ctx, CancellationToken ct)

